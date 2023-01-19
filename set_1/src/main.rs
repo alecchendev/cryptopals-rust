@@ -1,8 +1,72 @@
+use std::collections::HashMap;
+
 use base64::{engine::general_purpose, Engine};
 use hex;
 
 fn main() {
     println!("Hello, world!");
+}
+
+// Challenge 3
+
+fn decrypt_single_byte_xor(ciphertext: Vec<u8>) -> (u8, Vec<u8>) {
+    // https://en.wikipedia.org/wiki/Letter_frequency
+    let letter_frequency_percent: HashMap<char, u32> = HashMap::from([
+        ('a', 823),
+        ('b', 150),
+        ('c', 280),
+        ('d', 429),
+        ('e', 1280),
+        ('f', 224),
+        ('g', 203),
+        ('h', 614),
+        ('i', 614),
+        ('j', 15),
+        ('k', 77),
+        ('l', 406),
+        ('m', 242),
+        ('n', 680),
+        ('o', 757),
+        ('p', 194),
+        ('q', 9),
+        ('r', 603),
+        ('s', 638),
+        ('t', 913),
+        ('u', 278),
+        ('v', 98),
+        ('w', 238),
+        ('x', 15),
+        ('y', 199),
+        ('z', 7),
+        (' ', 1500),
+    ]);
+
+    let mut max_score = 0;
+    let mut max_score_values = (0, vec![]);
+    for i in 0..=255 {
+        let key = vec![i; ciphertext.len()];
+        let plaintext = fixed_xor(ciphertext.as_slice(), key.as_slice());
+        let score = plaintext.iter().fold(0, |acc, byte| {
+            let c = (*byte as char).to_ascii_lowercase();
+            acc + letter_frequency_percent.get(&c).unwrap_or(&0)
+        });
+        if score > max_score {
+            max_score = score;
+            max_score_values = (i, plaintext);
+        }
+    }
+
+    max_score_values
+}
+
+#[test]
+fn test_decrypt_single_bytes_xor() {
+    let input =
+        String::from("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736");
+    let expected_output = String::from("Cooking MC's like a pound of bacon");
+
+    let (_key, plaintext) = decrypt_single_byte_xor(hex::decode(input).unwrap());
+    assert_eq!(plaintext, expected_output.into_bytes());
 }
 
 // Challenge 2
