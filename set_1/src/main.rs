@@ -2,14 +2,81 @@ use std::collections::HashMap;
 
 use base64::{engine::general_purpose, Engine};
 use hex;
+use std::fs;
+use std::io::Read;
 
 fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 4
+
+fn decrypt_single_byte_xor_many(lines: Vec<String>) -> (u32, u8, Vec<u8>) {
+    let mut max_score = 0;
+    let mut max_score_values = (0, vec![]);
+    for line in lines {
+        let (score, key, plaintext) = decrypt_single_byte_xor(hex::decode(line).unwrap());
+        if score > max_score {
+            max_score = score;
+            max_score_values = (key, plaintext);
+        }
+    }
+    (max_score, max_score_values.0, max_score_values.1)
+}
+
+#[test]
+fn test_detect_single_byte_xor() {
+    let mut file = fs::File::open("data/4.txt").unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    let mut lines = Vec::new();
+    for line in contents.lines() {
+        lines.push(line.to_owned());
+    }
+
+    let expected_output = String::from("Now that the party is jumping\n");
+    let (_, _, plaintext) = decrypt_single_byte_xor_many(lines);
+    assert_eq!(plaintext, expected_output.into_bytes());
+}
+
 // Challenge 3
 
-fn decrypt_single_byte_xor(ciphertext: Vec<u8>) -> (u8, Vec<u8>) {
+fn decrypt_single_byte_xor(ciphertext: Vec<u8>) -> (u32, u8, Vec<u8>) {
+    let mut max_score = 0;
+    let mut max_score_values = (0, vec![]);
+    for i in 0..=255 {
+        let key = vec![i; ciphertext.len()];
+        let plaintext = fixed_xor(ciphertext.as_slice(), key.as_slice());
+        let score = calculate_score(&plaintext);
+        if score > max_score {
+            max_score = score;
+            max_score_values = (i, plaintext);
+        }
+    }
+
+    (max_score, max_score_values.0, max_score_values.1)
+}
+
+fn get_candidates(ciphertext: Vec<u8>, n: usize) -> Vec<(u32, String)> {
+    let mut results = Vec::new();
+    for i in 0..=255 {
+        let key = vec![i; ciphertext.len()];
+        let plaintext = fixed_xor(ciphertext.as_slice(), key.as_slice());
+        let score = calculate_score(&plaintext);
+        if let Ok(s) = String::from_utf8(plaintext) {
+            results.push((score, s));
+        }
+    }
+    results.sort();
+    results.reverse();
+    if results.len() >= n {
+        results[0..n].to_vec()
+    } else {
+        results
+    }
+}
+
+fn calculate_score(plaintext: &Vec<u8>) -> u32 {
     // https://en.wikipedia.org/wiki/Letter_frequency
     let letter_frequency_percent: HashMap<char, u32> = HashMap::from([
         ('a', 823),
@@ -41,22 +108,10 @@ fn decrypt_single_byte_xor(ciphertext: Vec<u8>) -> (u8, Vec<u8>) {
         (' ', 1500),
     ]);
 
-    let mut max_score = 0;
-    let mut max_score_values = (0, vec![]);
-    for i in 0..=255 {
-        let key = vec![i; ciphertext.len()];
-        let plaintext = fixed_xor(ciphertext.as_slice(), key.as_slice());
-        let score = plaintext.iter().fold(0, |acc, byte| {
-            let c = (*byte as char).to_ascii_lowercase();
-            acc + letter_frequency_percent.get(&c).unwrap_or(&0)
-        });
-        if score > max_score {
-            max_score = score;
-            max_score_values = (i, plaintext);
-        }
-    }
-
-    max_score_values
+    plaintext.iter().fold(0, |acc, byte| {
+        let c = (*byte as char).to_ascii_lowercase();
+        acc + letter_frequency_percent.get(&c).unwrap_or(&0)
+    })
 }
 
 #[test]
@@ -65,7 +120,7 @@ fn test_decrypt_single_bytes_xor() {
         String::from("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736");
     let expected_output = String::from("Cooking MC's like a pound of bacon");
 
-    let (_key, plaintext) = decrypt_single_byte_xor(hex::decode(input).unwrap());
+    let (_, _, plaintext) = decrypt_single_byte_xor(hex::decode(input).unwrap());
     assert_eq!(plaintext, expected_output.into_bytes());
 }
 
