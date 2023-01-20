@@ -9,10 +9,49 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 8
+
+fn detect_aes_ecb(lines: &Vec<Vec<u8>>) -> Option<Vec<u8>> {
+    for (i, line) in lines.iter().enumerate() {
+        let mut block_frequency: HashMap<[u8; 16], u32> = HashMap::new();
+        for i in 0..(line.len() / 16) {
+            let block: [u8; 16] = line[(i * 16)..((i + 1) * 16)].try_into().unwrap();
+            block_frequency
+                .entry(block)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+        let mut values: Vec<u32> = block_frequency.into_values().collect();
+        values.sort();
+        values.reverse();
+        if values[0] > 0 {
+            return Some(line.to_owned());
+        }
+    }
+    None
+}
+
+#[test]
+fn test_detect_aes_ecb() {
+    let mut file = fs::File::open("data/8.txt").unwrap();
+    let mut hex_contents = String::new();
+    file.read_to_string(&mut hex_contents).unwrap();
+    let lines: Vec<Vec<u8>> = hex_contents
+        .lines()
+        .map(|line| hex::decode(line).unwrap())
+        .collect();
+    let expected_output = lines[0].to_owned();
+    let output = detect_aes_ecb(&lines).unwrap();
+    assert_eq!(expected_output, output);
+}
+
 // Challenge 7
 
-fn decrypt_aes_ecb_mode(key: &Vec<u8>, input: &Vec<u8>) -> Vec<u8> {
-    symm::decrypt(symm::Cipher::aes_128_ecb(), key, None, input).unwrap()
+fn decrypt_aes_ecb_mode(
+    key: &Vec<u8>,
+    input: &Vec<u8>,
+) -> Result<Vec<u8>, openssl::error::ErrorStack> {
+    symm::decrypt(symm::Cipher::aes_128_ecb(), key, None, input)
 }
 
 #[test]
@@ -29,7 +68,7 @@ fn test_decrypt_aes_ecb_mode() {
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
 
-    let output = decrypt_aes_ecb_mode(&key, &contents);
+    let output = decrypt_aes_ecb_mode(&key, &contents).unwrap();
     assert_eq!(output, expected_output);
 }
 
