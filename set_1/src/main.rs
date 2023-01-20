@@ -1,12 +1,36 @@
-use std::collections::HashMap;
-
 use base64::{engine::general_purpose, Engine};
 use hex;
+use openssl::symm;
+use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
 
 fn main() {
     println!("Hello, world!");
+}
+
+// Challenge 7
+
+fn decrypt_aes_ecb_mode(key: &Vec<u8>, input: &Vec<u8>) -> Vec<u8> {
+    symm::decrypt(symm::Cipher::aes_128_ecb(), key, None, input).unwrap()
+}
+
+#[test]
+fn test_decrypt_aes_ecb_mode() {
+    let mut file = fs::File::open("data/7.txt").unwrap();
+    let mut base64_contents = String::new();
+    file.read_to_string(&mut base64_contents).unwrap();
+    base64_contents = base64_contents.replace("\n", "");
+    let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
+    let key = String::from("YELLOW SUBMARINE").into_bytes();
+
+    let mut file = fs::File::open("data/6_sol.txt").unwrap();
+    let mut expected_output = String::new();
+    file.read_to_string(&mut expected_output).unwrap();
+    let expected_output = expected_output.into_bytes();
+
+    let output = decrypt_aes_ecb_mode(&key, &contents);
+    assert_eq!(output, expected_output);
 }
 
 // Challenge 6
