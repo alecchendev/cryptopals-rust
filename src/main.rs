@@ -10,6 +10,42 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 10
+fn decrypt_aes_cbc(key: &[u8], iv: &[u8], input: &[u8]) -> Vec<u8> {
+    let mut plaintext = vec![];
+    let block_len = 16;
+    for (i, chunk) in input.chunks(block_len).enumerate() {
+        let decrypted = decrypt_aes_ecb_mode(&key.to_vec(), &chunk.to_vec());
+        let xor = if i == 0 {
+            iv
+        } else {
+            &input[((i - 1) * block_len)..(i * block_len)]
+        };
+        let decrypted_xor = fixed_xor(decrypted.as_slice(), xor);
+        plaintext.extend_from_slice(&decrypted_xor);
+    }
+    unpad_pkcs7(plaintext.as_slice())
+}
+
+#[test]
+fn test_decrypt_aes_cbc() {
+    let mut file = fs::File::open("data/10.txt").unwrap();
+    let mut base64_contents = String::new();
+    file.read_to_string(&mut base64_contents).unwrap();
+    base64_contents = base64_contents.replace("\n", "");
+    let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
+    let key = String::from("YELLOW SUBMARINE");
+    let iv = &[0u8; 16];
+
+    let mut file = fs::File::open("data/6_sol.txt").unwrap();
+    let mut expected_output = String::new();
+    file.read_to_string(&mut expected_output).unwrap();
+    let expected_output = expected_output.into_bytes();
+
+    let output = decrypt_aes_cbc(key.as_bytes(), iv, contents.as_slice());
+    assert_eq!(output, expected_output);
+}
+
 // Challenge 9
 
 fn pkcs7_pad(input: &[u8], length: usize) -> Vec<u8> {
@@ -93,7 +129,7 @@ fn decrypt_aes_ecb_mode(key: &Vec<u8>, input: &Vec<u8>) -> Vec<u8> {
         cipher.decrypt_block(&mut block);
         plaintext.extend_from_slice(&block);
     }
-    unpad_pkcs7(plaintext.as_slice())
+    plaintext
 }
 
 #[test]
@@ -103,16 +139,14 @@ fn test_decrypt_aes_ecb_mode() {
     file.read_to_string(&mut base64_contents).unwrap();
     base64_contents = base64_contents.replace("\n", "");
     let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
-    println!("{}", contents.len());
     let key = String::from("YELLOW SUBMARINE").into_bytes();
 
     let mut file = fs::File::open("data/6_sol.txt").unwrap();
     let mut expected_output = String::new();
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
-    println!("{}", expected_output.len());
 
-    let output = decrypt_aes_ecb_mode(&key, &contents);
+    let output = unpad_pkcs7(decrypt_aes_ecb_mode(&key, &contents).as_slice());
     assert_eq!(output, expected_output);
 }
 
