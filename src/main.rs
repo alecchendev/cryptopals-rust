@@ -1,169 +1,21 @@
+use aes::cipher::{generic_array::GenericArray, BlockCipher, BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::Aes128;
 use base64::{engine::general_purpose, Engine};
 use hex;
-use openssl::symm;
 use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
 
 fn main() {
     println!("Hello, world!");
-    // let mut file = fs::File::open("data/7.txt").unwrap();
-    // let mut base64_contents = String::new();
-    // file.read_to_string(&mut base64_contents).unwrap();
-    // base64_contents = base64_contents.replace("\n", "");
-    // let contents_7 = general_purpose::STANDARD.decode(base64_contents).unwrap();
-    // let mut file = fs::File::open("data/10.txt").unwrap();
-    // let mut base64_contents = String::new();
-    // file.read_to_string(&mut base64_contents).unwrap();
-    // base64_contents = base64_contents.replace("\n", "");
-    // let contents_10 = general_purpose::STANDARD.decode(base64_contents).unwrap();
-    // println!("{:?}", &contents_7[0..16]);
-    // println!("{:?}", &contents_10[0..16]);
-    // let key = String::from("YELLOW SUBMARINE").into_bytes();
-    // println!(
-    //     "{}",
-    //     String::from_utf8(decrypt_aes_ecb_mode(&key, &contents_7[0..16].to_vec()).unwrap())
-    //         .unwrap()
-    // );
-    // println!(
-    //     "{}",
-    //     String::from_utf8(decrypt_aes_ecb_mode(&key, &contents_10[0..16].to_vec()).unwrap())
-    //         .unwrap()
-    // );
-
-    let mut file = fs::File::open("data/6_sol.txt").unwrap();
-    let mut plaintext = String::new();
-    file.read_to_string(&mut plaintext).unwrap();
-    println!("{}", plaintext);
-
-    let key = String::from("YELLOW SUBMARINE").into_bytes();
-    let iv = String::from("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
-        .into_bytes();
-    let ciphertext = symm::encrypt(
-        symm::Cipher::aes_128_cbc(),
-        &key,
-        Some(&iv),
-        &plaintext.clone().into_bytes(),
-    )
-    .unwrap();
-    let ciphertext2 = encrypt_aes_cbc_mode(&plaintext.into_bytes(), &key, &iv);
-    println!("{}", ciphertext == ciphertext2);
-    let ciphertext_encoded = general_purpose::STANDARD.encode(ciphertext);
-    let mut out_file = fs::File::create("data/10_test.txt").unwrap();
-    out_file.write_all(&ciphertext_encoded.as_bytes()).unwrap();
-
-    // let mut file = fs::File::open("data/7.txt").unwrap();
-    // let mut base64_contents = String::new();
-    // file.read_to_string(&mut base64_contents).unwrap();
-    // base64_contents = base64_contents.replace("\n", "");
-    // let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
-    // let key = String::from("YELLOW SUBMARINE").into_bytes();
-    // let output = decrypt_aes_ecb_mode(&key, &contents).unwrap();
-    // println!("{}", String::from_utf8(output).unwrap());
-}
-
-// Challenge 10
-fn encrypt_aes_cbc_mode(input: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>) -> Vec<u8> {
-    let cipher = symm::Cipher::aes_128_ecb();
-    let block_len = cipher.block_size();
-    println!("encrypt block size: {}", block_len);
-    let padded_input = pkcs7_pad(input, block_len * div_ceil(input.len(), block_len));
-    let mut output = vec![];
-    for i in 0..(padded_input.len() / block_len) {
-        let block = padded_input[(i * block_len)..((i + 1) * block_len)].to_vec();
-        let xor_block = if i == 0 {
-            iv.to_vec()
-        } else {
-            output[((i - 1) * block_len)..(i * block_len)].to_vec()
-        };
-        // xor
-        let xor = fixed_xor(&block, &xor_block);
-        // encrypt
-        let ciphertext = symm::encrypt(symm::Cipher::aes_128_ecb(), key, None, &xor).unwrap();
-        output.extend(ciphertext.into_iter());
-    }
-
-    output
-}
-
-fn decrypt_aes_cbc_mode(input: &Vec<u8>, key: &Vec<u8>, iv: &Vec<u8>) -> Vec<u8> {
-    let cipher = symm::Cipher::aes_128_ecb();
-    let block_len = 32; // cipher.block_size();
-    println!("decrypt block size: {}", block_len);
-    // assert_eq!(key.len(), block_len);
-    assert!(input.len() % block_len == 0);
-    let mut output = vec![];
-    for block_idx in 0..div_ceil(input.len(), block_len) {
-        let start = block_idx * block_len;
-        let end = (block_idx + 1) * block_len;
-        let block: [u8; 32] = input[start..end].try_into().unwrap();
-        // decrypt
-        println!("{:?}", &block);
-        let dec = symm::decrypt(symm::Cipher::aes_128_ecb(), key, None, &block).unwrap();
-        println!("{}", dec.len());
-        // xor
-        let xor_block = if block_idx == 0 {
-            iv.to_vec()
-        } else {
-            input[((block_idx - 1) * 16)..((block_idx) * 16)].to_vec()
-        };
-        let dec_xor = fixed_xor(&dec, &xor_block);
-        output.extend(dec_xor.into_iter());
-    }
-    output
-}
-
-#[test]
-fn test_sanity_openssl() {
-    let plaintext = String::from("asdfasdfasdfasdf").into_bytes();
-    let key = String::from("YELLOW SUBMARINE").into_bytes();
-    let iv = String::from("0000000000000000").into_bytes();
-    assert_eq!(
-        symm::decrypt(
-            symm::Cipher::aes_128_ecb(),
-            &key,
-            None,
-            &symm::encrypt(symm::Cipher::aes_128_ecb(), &key, None, &plaintext).unwrap()
-        )
-        .unwrap(),
-        plaintext
-    );
-}
-
-#[test]
-fn test_encrypt_aes_cbc_mode() {
-    let plaintext = String::from("asdfasdfasdfasdf asdfasdfasdfasd dkdkdkdkdkdkdkd").into_bytes();
-    let key = String::from("YELLOW SUBMARINE").into_bytes();
-    let iv = String::from("0000000000000000").into_bytes();
-    let encrypted = encrypt_aes_cbc_mode(&plaintext, &key, &iv);
-    println!("{}", encrypted.len());
-    println!("{:?}", encrypted);
-    assert_eq!(decrypt_aes_cbc_mode(&encrypted, &key, &iv), plaintext);
-    assert_eq!(encrypted, String::from("adf").into_bytes());
-}
-
-#[test]
-fn test_decrypt_aes_cbc_mode() {
-    let mut file = fs::File::open("data/10.txt").unwrap();
-    let mut base64_contents = String::new();
-    file.read_to_string(&mut base64_contents).unwrap();
-    base64_contents = base64_contents.replace("\n", "");
-    let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
-    // println!("{:?}", contents);
-    let key = String::from("YELLOW SUBMARINE").into_bytes();
-    let iv = String::from("0000000000000000").into_bytes();
-
-    let expected_output = String::from("asdf").into_bytes();
-    let output = decrypt_aes_cbc_mode(&contents, &key, &iv);
-    assert_eq!(output, expected_output);
 }
 
 // Challenge 9
 
-fn pkcs7_pad(input: &Vec<u8>, length: usize) -> Vec<u8> {
+fn pkcs7_pad(input: &[u8], length: usize) -> Vec<u8> {
     let pad_len = length - input.len();
     let pad_len: u8 = pad_len.try_into().unwrap();
-    let mut output = input.clone();
+    let mut output = input.to_vec().clone();
     output.extend(vec![pad_len; pad_len as usize].into_iter());
     output
 }
@@ -180,7 +32,7 @@ fn test_pkcs7_pad() {
 // Challenge 8
 
 fn detect_aes_ecb(lines: &Vec<Vec<u8>>) -> Option<Vec<u8>> {
-    for (i, line) in lines.iter().enumerate() {
+    for (_, line) in lines.iter().enumerate() {
         let mut block_frequency: HashMap<[u8; 16], u32> = HashMap::new();
         for i in 0..(line.len() / 16) {
             let block: [u8; 16] = line[(i * 16)..((i + 1) * 16)].try_into().unwrap();
@@ -215,11 +67,33 @@ fn test_detect_aes_ecb() {
 
 // Challenge 7
 
-fn decrypt_aes_ecb_mode(
-    key: &Vec<u8>,
-    input: &Vec<u8>,
-) -> Result<Vec<u8>, openssl::error::ErrorStack> {
-    symm::decrypt(symm::Cipher::aes_128_ecb(), key, None, input)
+fn unpad_pkcs7(input: &[u8]) -> Vec<u8> {
+    assert!(input.len() > 0);
+    let last_byte = *input.last().unwrap();
+    if last_byte as usize > input.len() {
+        return input.to_vec();
+    }
+    let is_padded = input[(input.len() - last_byte as usize)..input.len()]
+        .iter()
+        .all(|&b| b == last_byte);
+    if is_padded {
+        input[..(input.len() - last_byte as usize)].to_vec()
+    } else {
+        input.to_vec()
+    }
+}
+
+fn decrypt_aes_ecb_mode(key: &Vec<u8>, input: &Vec<u8>) -> Vec<u8> {
+    let key = GenericArray::from_slice(key);
+    let cipher = Aes128::new(&key);
+    let mut plaintext = vec![];
+    let block_len = 16;
+    for chunk in input.chunks(block_len) {
+        let mut block = *GenericArray::from_slice(chunk);
+        cipher.decrypt_block(&mut block);
+        plaintext.extend_from_slice(&block);
+    }
+    unpad_pkcs7(plaintext.as_slice())
 }
 
 #[test]
@@ -229,14 +103,16 @@ fn test_decrypt_aes_ecb_mode() {
     file.read_to_string(&mut base64_contents).unwrap();
     base64_contents = base64_contents.replace("\n", "");
     let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
+    println!("{}", contents.len());
     let key = String::from("YELLOW SUBMARINE").into_bytes();
 
     let mut file = fs::File::open("data/6_sol.txt").unwrap();
     let mut expected_output = String::new();
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
+    println!("{}", expected_output.len());
 
-    let output = decrypt_aes_ecb_mode(&key, &contents).unwrap();
+    let output = decrypt_aes_ecb_mode(&key, &contents);
     assert_eq!(output, expected_output);
 }
 
