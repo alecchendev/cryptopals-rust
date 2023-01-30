@@ -16,16 +16,16 @@ fn main() {
 fn generate_key() -> [u8; 16] {
     let mut rng = thread_rng();
     let mut key = [0; 16];
-    for i in 0..16 {
-        key[i] = rng.gen();
+    for byte in &mut key {
+        *byte = rng.gen();
     }
     key
 }
 
 #[derive(PartialEq)]
 enum AesBlockCipherMode {
-    ECB,
-    CBC,
+    Ecb,
+    Cbc,
 }
 
 fn detect_mode(ciphertext: &[u8]) -> AesBlockCipherMode {
@@ -50,9 +50,9 @@ fn detect_mode(ciphertext: &[u8]) -> AesBlockCipherMode {
         max_repeat = std::cmp::max(max_repeat, values[0]);
     }
     if max_repeat > 1 {
-        AesBlockCipherMode::ECB
+        AesBlockCipherMode::Ecb
     } else {
-        AesBlockCipherMode::CBC
+        AesBlockCipherMode::Cbc
     }
 }
 
@@ -72,11 +72,11 @@ fn encrypt_oracle(input: &[u8]) -> (AesBlockCipherMode, Vec<u8>) {
     // randomly encrypt using ECB or CBC
     let key = generate_key();
     match thread_rng().gen_range(0..2) {
-        0 => (AesBlockCipherMode::ECB, aes_ecb_encrypt(&plaintext, &key)),
+        0 => (AesBlockCipherMode::Ecb, aes_ecb_encrypt(&plaintext, &key)),
         1 => {
             let iv = generate_key();
             (
-                AesBlockCipherMode::CBC,
+                AesBlockCipherMode::Cbc,
                 aes_cbc_encrypt(&plaintext, &key, &iv),
             )
         }
@@ -107,7 +107,7 @@ fn aes_cbc_encrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
             _ => ciphertext.get(((i - 1) * 16)..(i * 16)).unwrap(), // array_ref!(ciphertext.as_slice(), (i - 1) * 16, i * 16),
         };
         let plaintext_xored = fixed_xor(chunk, xor);
-        let plaintext_xored_encrypted = aes_ecb_encrypt(&plaintext_xored, &key);
+        let plaintext_xored_encrypted = aes_ecb_encrypt(&plaintext_xored, key);
         ciphertext.extend(plaintext_xored_encrypted);
     }
     ciphertext
@@ -164,7 +164,7 @@ fn aes_cbc_decrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
     let mut plaintext = vec![];
     let block_len = 16;
     for (i, chunk) in input.chunks(block_len).enumerate() {
-        let decrypted = aes_ecb_decrypt(&chunk.to_vec(), &key.to_vec());
+        let decrypted = aes_ecb_decrypt(chunk, key);
         let xor = if i == 0 {
             iv
         } else {
@@ -200,7 +200,7 @@ fn test_aes_cbc_decrypt() {
 fn pkcs7_pad(input: &[u8], length: usize) -> Vec<u8> {
     let pad_len = length - input.len();
     let pad_len: u8 = pad_len.try_into().unwrap();
-    let mut output = input.to_vec().clone();
+    let mut output = input.to_vec();
     output.extend(vec![pad_len; pad_len as usize].into_iter());
     output
 }
@@ -216,7 +216,7 @@ fn test_pkcs7_pad() {
 
 // Challenge 8
 
-fn detect_aes_ecb(lines: &Vec<Vec<u8>>) -> Option<Vec<u8>> {
+fn detect_aes_ecb(lines: &[Vec<u8>]) -> Option<Vec<u8>> {
     for line in lines.iter() {
         let mut block_frequency: HashMap<[u8; 16], u32> = HashMap::new();
         for i in 0..(line.len() / 16) {
@@ -253,7 +253,7 @@ fn test_detect_aes_ecb() {
 // Challenge 7
 
 fn pkcs7_unpad(input: &[u8]) -> Vec<u8> {
-    assert!(input.len() > 0);
+    assert!(!input.is_empty());
     let last_byte = *input.last().unwrap();
     if last_byte as usize > input.len() {
         return input.to_vec();
@@ -268,9 +268,9 @@ fn pkcs7_unpad(input: &[u8]) -> Vec<u8> {
     }
 }
 
-fn aes_ecb_decrypt(input: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
+fn aes_ecb_decrypt(input: &[u8], key: &[u8]) -> Vec<u8> {
     let key = GenericArray::from_slice(key);
-    let cipher = Aes128::new(&key);
+    let cipher = Aes128::new(key);
     let mut plaintext = vec![];
     let block_len = 16;
     for chunk in input.chunks(block_len) {
@@ -301,11 +301,11 @@ fn test_aes_ecb_decrypt() {
 
 // Challenge 6
 
-fn get_best_key_size(input: &Vec<u8>) -> usize {
+fn get_best_key_size(input: &[u8]) -> usize {
     get_key_sizes(input)[0]
 }
 
-fn get_key_sizes(input: &Vec<u8>) -> Vec<usize> {
+fn get_key_sizes(input: &[u8]) -> Vec<usize> {
     let candidate_key_sizes = 2..40;
     let mut key_size_scores = Vec::new();
     for key_size in candidate_key_sizes {
@@ -316,7 +316,7 @@ fn get_key_sizes(input: &Vec<u8>) -> Vec<usize> {
     key_size_scores.iter().map(|&(_score, key)| key).collect()
 }
 
-fn get_key_size_score(input: &Vec<u8>, key_size: usize) -> u32 {
+fn get_key_size_score(input: &[u8], key_size: usize) -> u32 {
     let n_blocks = 4;
     assert!(input.len() > key_size * n_blocks);
 
@@ -328,8 +328,7 @@ fn get_key_size_score(input: &Vec<u8>, key_size: usize) -> u32 {
     let mut score = 0;
     for i in 0..(n_blocks - 1) {
         let block_i = blocks[i];
-        for j in (i + 1)..n_blocks {
-            let block_j = blocks[j];
+        for block_j in blocks.iter().take(n_blocks).skip(i + 1) {
             let distance = hamming_distance(block_i.to_vec(), block_j.to_vec());
             score += normalize_distance(distance, key_size);
         }
@@ -356,7 +355,7 @@ fn decrypt_repeating_key_xor(input: Vec<u8>) -> Vec<u8> {
     }
 
     // Decrypt
-    repeating_key_xor(key, input.clone())
+    repeating_key_xor(key, input)
 }
 
 #[test]
@@ -375,17 +374,17 @@ fn test_decrypt_repeating_key_xor() {
     assert_eq!(output, expected_output.into_bytes());
 }
 
-fn transpose_blocks(blocks: &Vec<Vec<u8>>) -> Vec<Vec<u8>> {
-    assert!(blocks.len() > 0);
+fn transpose_blocks(blocks: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    assert!(!blocks.is_empty());
     let key_size = blocks[0].len();
     let mut transposed = vec![];
     for col in 0..key_size {
         let mut block = vec![];
-        for row in 0..blocks.len() {
-            if blocks[row].len() <= col {
+        for blocks_row in blocks {
+            if blocks_row.len() <= col {
                 break;
             }
-            block.push(blocks[row][col]);
+            block.push(blocks_row[col]);
         }
         transposed.push(block);
     }
@@ -405,7 +404,7 @@ fn div_ceil(a: usize, b: usize) -> usize {
     (a + b - 1) / b
 }
 
-fn get_blocks(input: &Vec<u8>, key_size: usize) -> Vec<Vec<u8>> {
+fn get_blocks(input: &[u8], key_size: usize) -> Vec<Vec<u8>> {
     let mut blocks = vec![];
     let n_blocks = div_ceil(input.len(), key_size);
     for block_idx in 0..n_blocks {
@@ -454,8 +453,8 @@ fn test_hamming_distance() {
 // Challenge 5
 
 fn repeating_key_xor(key: Vec<u8>, input: Vec<u8>) -> Vec<u8> {
-    assert!(key.len() > 0);
-    assert!(input.len() > 0);
+    assert!(!key.is_empty());
+    assert!(!input.is_empty());
     let mut output = Vec::new();
     let mut key_idx = 0;
     for byte in input.iter() {
@@ -530,7 +529,7 @@ fn decrypt_single_byte_xor(ciphertext: Vec<u8>) -> (u32, u8, Vec<u8>) {
     (max_score, max_score_values.0, max_score_values.1)
 }
 
-fn calculate_score(plaintext: &Vec<u8>) -> u32 {
+fn calculate_score(plaintext: &[u8]) -> u32 {
     // https://en.wikipedia.org/wiki/Letter_frequency
     let letter_frequency_percent: HashMap<char, u32> = HashMap::from([
         ('a', 823),
