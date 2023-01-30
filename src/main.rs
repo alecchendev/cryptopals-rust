@@ -2,6 +2,7 @@ use aes::cipher::{generic_array::GenericArray, BlockCipher, BlockDecrypt, BlockE
 use aes::Aes128;
 use base64::{engine::general_purpose, Engine};
 use hex;
+use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
@@ -10,12 +11,162 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 11
+
+fn generate_key() -> [u8; 16] {
+    let mut rng = thread_rng();
+    let mut key = [0; 16];
+    for i in 0..16 {
+        key[i] = rng.gen();
+    }
+    key
+}
+
+#[derive(PartialEq)]
+enum AesBlockCipherMode {
+    ECB,
+    CBC,
+}
+
+fn detect_mode(ciphertext: &[u8]) -> AesBlockCipherMode {
+    assert!(ciphertext.len() % 16 == 0);
+    let mut max_repeat = 1;
+    for offset in 0..16 {
+        let ciphertext = &ciphertext[offset..];
+        let mut block_frequency: HashMap<[u8; 16], u32> = HashMap::new();
+        for (i, chunk) in ciphertext.chunks(16).enumerate() {
+            if chunk.len() != 16 {
+                continue;
+            }
+            let block: [u8; 16] = chunk.try_into().unwrap();
+            block_frequency
+                .entry(block)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+        let mut values: Vec<u32> = block_frequency.into_values().collect();
+        values.sort();
+        values.reverse();
+        max_repeat = std::cmp::max(max_repeat, values[0]);
+    }
+    if max_repeat > 1 {
+        AesBlockCipherMode::ECB
+    } else {
+        AesBlockCipherMode::CBC
+    }
+}
+
+fn encrypt_oracle(input: &[u8]) -> (AesBlockCipherMode, Vec<u8>) {
+    // append 5-10 bytes before and after plaintext
+    let mut rng = thread_rng();
+    let random_bytes: Vec<u8> = (0..rng.gen_range(5..=10)).map(|_| rng.gen()).collect();
+    let mut plaintext = vec![];
+    plaintext.extend(random_bytes.iter());
+    plaintext.extend_from_slice(input);
+    plaintext.extend(random_bytes.iter());
+    let plaintext = pkcs7_pad(
+        plaintext.as_slice(),
+        plaintext.len() + 16 - (plaintext.len() % 16),
+    );
+
+    // randomly encrypt using ECB or CBC
+    let key = generate_key();
+    match thread_rng().gen_range(0..2) {
+        0 => (AesBlockCipherMode::ECB, aes_ecb_encrypt(&plaintext, &key)),
+        1 => {
+            let iv = generate_key();
+            (
+                AesBlockCipherMode::CBC,
+                aes_cbc_encrypt(&plaintext, &key, &iv),
+            )
+        }
+        _ => panic!("Generated number out of range"),
+    }
+}
+
+#[test]
+fn test_detect_mode() {
+    let mut file = fs::File::open("data/6_sol.txt").unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+
+    let n_trials = 30;
+    for _ in 0..n_trials {
+        let (mode, ciphertext) = encrypt_oracle(contents.as_bytes());
+        let output = detect_mode(&ciphertext);
+        assert!(output == mode);
+    }
+}
+
+fn aes_cbc_encrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    assert!(input.len() % 16 == 0);
+    let key_arr = GenericArray::from_slice(key);
+    let cipher = Aes128::new(key_arr);
+    let mut ciphertext = vec![];
+    for (i, chunk) in input.chunks(16).enumerate() {
+        let xor: &[u8] = match i {
+            0 => iv,
+            _ => ciphertext.get(((i - 1) * 16)..(i * 16)).unwrap(), // array_ref!(ciphertext.as_slice(), (i - 1) * 16, i * 16),
+        };
+        let plaintext_xored = fixed_xor(chunk, xor);
+        let plaintext_xored_encrypted = aes_ecb_encrypt(&plaintext_xored, &key);
+        ciphertext.extend(plaintext_xored_encrypted);
+    }
+    ciphertext
+}
+
+#[test]
+fn test_aes_cbc_encrypt() {
+    let mut rng = thread_rng();
+    let plaintext: Vec<u8> = (0..rng.gen_range(16..256)).map(|_| rng.gen()).collect();
+    let plaintext = pkcs7_pad(
+        plaintext.as_slice(),
+        plaintext.len() + 16 - (plaintext.len() % 16),
+    );
+    println!("{}", plaintext.len() % 16);
+    let key = generate_key();
+    println!("{}", key.len());
+    let iv = generate_key();
+    let ciphertext = aes_cbc_encrypt(&plaintext, &key, &iv);
+    let decrypted_ciphertext = aes_cbc_decrypt(&ciphertext, &key.to_vec(), &iv);
+    assert_eq!(plaintext, decrypted_ciphertext);
+}
+
+fn aes_ecb_encrypt(input: &[u8], key: &[u8]) -> Vec<u8> {
+    assert!(input.len() % 16 == 0);
+    let key = GenericArray::from_slice(key);
+    let cipher = Aes128::new(key);
+    let mut ciphertext = vec![];
+    for chunk in input.chunks(16) {
+        let mut block = *GenericArray::from_slice(chunk);
+        cipher.encrypt_block(&mut block);
+        ciphertext.extend_from_slice(&block);
+    }
+    ciphertext
+}
+
+#[test]
+fn test_aes_ecb_encrypt() {
+    let mut rng = thread_rng();
+    let plaintext: Vec<u8> = (0..rng.gen_range(16..256)).map(|_| rng.gen()).collect();
+    let plaintext = pkcs7_pad(
+        plaintext.as_slice(),
+        plaintext.len() + 16 - (plaintext.len() % 16),
+    );
+    println!("{}", plaintext.len() % 16);
+    let key = generate_key();
+    let ciphertext = aes_ecb_encrypt(&plaintext, &key);
+    let decrypted_ciphertext = aes_ecb_decrypt(&ciphertext, &key.to_vec());
+    assert_eq!(plaintext, decrypted_ciphertext);
+}
+
 // Challenge 10
-fn decrypt_aes_cbc(key: &[u8], iv: &[u8], input: &[u8]) -> Vec<u8> {
+
+fn aes_cbc_decrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
     let mut plaintext = vec![];
     let block_len = 16;
     for (i, chunk) in input.chunks(block_len).enumerate() {
-        let decrypted = decrypt_aes_ecb_mode(&key.to_vec(), &chunk.to_vec());
+        let decrypted = aes_ecb_decrypt(&chunk.to_vec(), &key.to_vec());
         let xor = if i == 0 {
             iv
         } else {
@@ -24,11 +175,11 @@ fn decrypt_aes_cbc(key: &[u8], iv: &[u8], input: &[u8]) -> Vec<u8> {
         let decrypted_xor = fixed_xor(decrypted.as_slice(), xor);
         plaintext.extend_from_slice(&decrypted_xor);
     }
-    unpad_pkcs7(plaintext.as_slice())
+    plaintext
 }
 
 #[test]
-fn test_decrypt_aes_cbc() {
+fn test_aes_cbc_decrypt() {
     let mut file = fs::File::open("data/10.txt").unwrap();
     let mut base64_contents = String::new();
     file.read_to_string(&mut base64_contents).unwrap();
@@ -42,7 +193,7 @@ fn test_decrypt_aes_cbc() {
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
 
-    let output = decrypt_aes_cbc(key.as_bytes(), iv, contents.as_slice());
+    let output = pkcs7_unpad(aes_cbc_decrypt(contents.as_slice(), key.as_bytes(), iv).as_slice());
     assert_eq!(output, expected_output);
 }
 
@@ -68,7 +219,7 @@ fn test_pkcs7_pad() {
 // Challenge 8
 
 fn detect_aes_ecb(lines: &Vec<Vec<u8>>) -> Option<Vec<u8>> {
-    for (_, line) in lines.iter().enumerate() {
+    for line in lines.iter() {
         let mut block_frequency: HashMap<[u8; 16], u32> = HashMap::new();
         for i in 0..(line.len() / 16) {
             let block: [u8; 16] = line[(i * 16)..((i + 1) * 16)].try_into().unwrap();
@@ -80,7 +231,7 @@ fn detect_aes_ecb(lines: &Vec<Vec<u8>>) -> Option<Vec<u8>> {
         let mut values: Vec<u32> = block_frequency.into_values().collect();
         values.sort();
         values.reverse();
-        if values[0] > 0 {
+        if values[0] > 1 {
             return Some(line.to_owned());
         }
     }
@@ -96,14 +247,14 @@ fn test_detect_aes_ecb() {
         .lines()
         .map(|line| hex::decode(line).unwrap())
         .collect();
-    let expected_output = lines[0].to_owned();
+    let expected_output = lines[132].to_owned();
     let output = detect_aes_ecb(&lines).unwrap();
     assert_eq!(expected_output, output);
 }
 
 // Challenge 7
 
-fn unpad_pkcs7(input: &[u8]) -> Vec<u8> {
+fn pkcs7_unpad(input: &[u8]) -> Vec<u8> {
     assert!(input.len() > 0);
     let last_byte = *input.last().unwrap();
     if last_byte as usize > input.len() {
@@ -119,7 +270,7 @@ fn unpad_pkcs7(input: &[u8]) -> Vec<u8> {
     }
 }
 
-fn decrypt_aes_ecb_mode(key: &Vec<u8>, input: &Vec<u8>) -> Vec<u8> {
+fn aes_ecb_decrypt(input: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
     let key = GenericArray::from_slice(key);
     let cipher = Aes128::new(&key);
     let mut plaintext = vec![];
@@ -133,7 +284,7 @@ fn decrypt_aes_ecb_mode(key: &Vec<u8>, input: &Vec<u8>) -> Vec<u8> {
 }
 
 #[test]
-fn test_decrypt_aes_ecb_mode() {
+fn test_aes_ecb_decrypt() {
     let mut file = fs::File::open("data/7.txt").unwrap();
     let mut base64_contents = String::new();
     file.read_to_string(&mut base64_contents).unwrap();
@@ -146,7 +297,7 @@ fn test_decrypt_aes_ecb_mode() {
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
 
-    let output = unpad_pkcs7(decrypt_aes_ecb_mode(&key, &contents).as_slice());
+    let output = pkcs7_unpad(aes_ecb_decrypt(&contents, &key).as_slice());
     assert_eq!(output, expected_output);
 }
 
