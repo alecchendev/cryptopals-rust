@@ -1,4 +1,4 @@
-use aes::cipher::{generic_array::GenericArray, BlockCipher, BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes128;
 use base64::{engine::general_purpose, Engine};
 use hex;
@@ -34,7 +34,7 @@ fn detect_mode(ciphertext: &[u8]) -> AesBlockCipherMode {
     for offset in 0..16 {
         let ciphertext = &ciphertext[offset..];
         let mut block_frequency: HashMap<[u8; 16], u32> = HashMap::new();
-        for (i, chunk) in ciphertext.chunks(16).enumerate() {
+        for chunk in ciphertext.chunks(16) {
             if chunk.len() != 16 {
                 continue;
             }
@@ -100,8 +100,6 @@ fn test_detect_mode() {
 
 fn aes_cbc_encrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
     assert!(input.len() % 16 == 0);
-    let key_arr = GenericArray::from_slice(key);
-    let cipher = Aes128::new(key_arr);
     let mut ciphertext = vec![];
     for (i, chunk) in input.chunks(16).enumerate() {
         let xor: &[u8] = match i {
@@ -530,25 +528,6 @@ fn decrypt_single_byte_xor(ciphertext: Vec<u8>) -> (u32, u8, Vec<u8>) {
     }
 
     (max_score, max_score_values.0, max_score_values.1)
-}
-
-fn get_candidates(ciphertext: Vec<u8>, n: usize) -> Vec<(u32, String)> {
-    let mut results = Vec::new();
-    for i in 0..=255 {
-        let key = vec![i; ciphertext.len()];
-        let plaintext = fixed_xor(ciphertext.as_slice(), key.as_slice());
-        let score = calculate_score(&plaintext);
-        if let Ok(s) = String::from_utf8(plaintext) {
-            results.push((score, s));
-        }
-    }
-    results.sort();
-    results.reverse();
-    if results.len() >= n {
-        results[0..n].to_vec()
-    } else {
-        results
-    }
 }
 
 fn calculate_score(plaintext: &Vec<u8>) -> u32 {
