@@ -6,9 +6,112 @@ use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
+use std::str::FromStr;
 
 fn main() {
     println!("Hello, world!");
+}
+
+// Challenge 12
+
+fn byte_at_a_time_ecb_decrypt(oracle: &ConsistentKey) -> Vec<u8> {
+    // We know the general format of the encryption I guess
+    // so we know this to be just the encrypted appendage
+    let ciphertext_len = 138; // hardcoded but I should actually find this later
+
+    // get block size
+    // only way I can think to get block size is to assume Ecb
+    // so it kinda defeats the point...? hardcoding for now
+    let block_size = 16;
+
+    // detect that the function is using ECB
+    let modified_ciphertext = oracle.encrypt(&[65; 32]);
+    let mode = detect_mode(&modified_ciphertext);
+    assert!(mode == AesBlockCipherMode::Ecb);
+
+    // decrypt
+    let mut decrypted = Vec::new();
+    for idx in 0..ciphertext_len {
+        // Get key block
+        let my_string = if idx < block_size {
+            vec![65u8; block_size - idx - 1]
+        } else {
+            vec![65u8; block_size - (idx % block_size) - 1]
+        };
+        let ciphertext_with_last_byte = oracle.encrypt(&my_string);
+        let target_block: [u8; 16] = if idx < block_size {
+            ciphertext_with_last_byte[0..16].try_into().unwrap()
+        } else {
+            ciphertext_with_last_byte
+                [(idx / block_size * block_size)..((idx / block_size + 1) * block_size)]
+                .try_into()
+                .unwrap()
+        };
+
+        // Construct pre-byte block
+        let my_string = if idx < block_size {
+            let mut my_string = vec![65u8; block_size - idx - 1];
+            my_string.extend(decrypted.iter().take(idx));
+            my_string
+        } else {
+            decrypted[(idx + 1 - block_size)..(idx)].to_vec()
+        };
+        let my_string: &[u8] = &my_string;
+
+        // iterate through bytes
+        let mut decrypted_byte = 0;
+        for byte in 0..=255 {
+            let plaintext: [u8; 16] = [my_string, &[byte]].concat().try_into().unwrap();
+            let ciphertext = oracle.encrypt(&plaintext);
+            if byte > 43 && byte < 47 {}
+            let first_block: [u8; 16] = ciphertext[0..16].try_into().unwrap();
+            if first_block == target_block {
+                decrypted_byte = *plaintext.last().unwrap();
+            }
+        }
+
+        // Append result
+        decrypted.push(decrypted_byte);
+    }
+    decrypted
+}
+
+struct ConsistentKey<'a> {
+    key: &'a [u8],
+    append_text: &'a [u8],
+}
+
+impl<'a> ConsistentKey<'a> {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        let plaintext_with_append: &[u8] = &[plaintext, self.append_text].concat();
+        let plaintext_to_encrypt = pkcs7_pad(
+            plaintext_with_append,
+            plaintext_with_append.len() + 16 - plaintext_with_append.len() % 16,
+        );
+        aes_ecb_encrypt(&plaintext_to_encrypt, self.key)
+    }
+}
+
+#[test]
+fn test_byte_at_a_time_ecb_decryption_simple() {
+    let key = generate_key();
+    let unknown_string_b64 = "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK";
+    let unknown_string = general_purpose::STANDARD_NO_PAD
+        .decode(unknown_string_b64)
+        .unwrap();
+    let oracle = ConsistentKey {
+        key: &key,
+        append_text: &unknown_string,
+    };
+
+    //     let expected_output = "Rollin' in my 5.0
+    // With my rag-top down so my hair can blow
+    // The girlies on standby waving just to say hi
+    // Did you stop? No, I just drove by"
+    //         .as_bytes();
+    let output = byte_at_a_time_ecb_decrypt(&oracle);
+    println!("{}", String::from_utf8(output.clone()).unwrap());
+    assert_eq!(output.as_slice(), unknown_string.as_slice());
 }
 
 // Challenge 11
