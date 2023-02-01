@@ -12,6 +12,175 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 13
+
+fn forge_admin_ciphertext(oracle: &ProfileManager) -> Vec<u8> {
+    let block_size = 16;
+    // get ciphertext block of "adminPADDING"
+    let email = String::from("fooo@barr.")
+        + std::str::from_utf8(&pkcs7_pad("admin".as_bytes(), block_size)).unwrap();
+    let admin_ciphertext = oracle.profile_for_encrypted(email.as_str());
+    let admin_block = admin_ciphertext.chunks(block_size).nth(1).unwrap();
+    // get first two blocks of "email=asdf&uid=asdf&role="
+    let email = "fooo@barr.com";
+    let prefix_ciphertext = oracle.profile_for_encrypted(email);
+    let prefix_blocks = &prefix_ciphertext[..(block_size * 2)];
+    // add together
+    [prefix_blocks, admin_block].concat()
+}
+
+#[test]
+fn test_forge_admin_ciphertext() {
+    let key = generate_key();
+    let profile_manager = ProfileManager::new(&key);
+    let ciphertext = forge_admin_ciphertext(&profile_manager);
+    let output = profile_manager.add_profile(&ciphertext);
+    assert!(output.role == Role::Admin);
+}
+
+struct ProfileManager<'a> {
+    key: &'a [u8],
+}
+
+impl<'a> ProfileManager<'a> {
+    fn new(key: &'a [u8]) -> Self {
+        Self { key }
+    }
+
+    fn add_profile(&self, ciphertext: &'a [u8]) -> UserProfile {
+        let plaintext = pkcs7_unpad(&aes_ecb_decrypt(ciphertext, self.key));
+        let profile = UserProfile::decode(std::str::from_utf8(&plaintext).unwrap());
+        // (add profile)
+        profile
+    }
+
+    fn profile_for(&self, email: &str) -> String {
+        assert!(!email.contains('=') && !email.contains('&'));
+        UserProfile {
+            email: String::from(email),
+            uid: 10,
+            role: Role::User,
+        }
+        .encode()
+    }
+
+    fn profile_for_encrypted(&self, email: &str) -> Vec<u8> {
+        aes_ecb_encrypt(&pkcs7_pad(self.profile_for(email).as_bytes(), 16), self.key)
+    }
+}
+
+#[derive(PartialEq)]
+enum Role {
+    User,
+    Admin,
+}
+
+#[derive(PartialEq)]
+struct UserProfile {
+    email: String,
+    uid: usize,
+    role: Role,
+}
+
+impl UserProfile {
+    fn encode(&self) -> String {
+        String::from("email=")
+            + &self.email
+            + "&uid="
+            + &self.uid.to_string()
+            + "&role="
+            + match self.role {
+                Role::User => "user",
+                Role::Admin => "admin",
+            }
+    }
+
+    fn decode(input: &str) -> Self {
+        let key_value_map = parse_key_value(input);
+        assert!(
+            key_value_map.contains_key("email")
+                && key_value_map.contains_key("uid")
+                && key_value_map.contains_key("role")
+        );
+        let email = *key_value_map.get("email").unwrap();
+        assert!(!email.contains('=') && !email.contains('&'));
+        let uid = key_value_map.get("uid").unwrap().parse::<usize>().unwrap();
+        let role = *key_value_map.get("role").unwrap();
+        println!("{} {:?}", input, role.as_bytes());
+        let role = match role {
+            "user" => Role::User,
+            "admin" => Role::Admin,
+            _ => panic!(),
+        };
+        Self {
+            email: String::from(email),
+            uid,
+            role,
+        }
+    }
+}
+
+#[test]
+fn test_add_profile() {
+    let key = generate_key();
+    let mut profile_manager = ProfileManager::new(&key);
+    let input = "foo@bar.com";
+    let expected_output = UserProfile {
+        email: String::from(input),
+        uid: 10,
+        role: Role::User,
+    };
+    let output = profile_manager.add_profile(&profile_manager.profile_for_encrypted(input));
+    assert!(output == expected_output);
+}
+
+#[test]
+fn test_profile_for() {
+    let input = "foo@bar.com";
+    let input2 = "bar@foo.com";
+    let key = generate_key();
+    let mut profile_manager = ProfileManager::new(&key);
+    let expected_output = "email=foo@bar.com&uid=10&role=user";
+    let output = profile_manager.profile_for(input);
+    assert_eq!(output, expected_output);
+    let expected_output = "email=bar@foo.com&uid=10&role=user";
+    let output = profile_manager.profile_for(input2);
+    assert_eq!(output, expected_output);
+}
+
+#[test]
+#[should_panic]
+fn test_profile_for_panic() {
+    let bad_input = "foo@bar.com&role=admin";
+    let key = generate_key();
+    let mut profile_manager = ProfileManager::new(&key);
+    profile_manager.profile_for(bad_input);
+}
+
+fn parse_key_value(input: &str) -> HashMap<&str, &str> {
+    let mut object: HashMap<&str, &str> = HashMap::new();
+    for s in input.split('&') {
+        let key_value: Vec<&str> = s.split('=').collect();
+        assert!(key_value.len() == 2);
+        let key = key_value[0];
+        let value = key_value[1];
+        let prev_value = object.insert(key, value);
+        assert!(prev_value.is_none());
+    }
+    object
+}
+
+#[test]
+fn test_parse_key_value() {
+    let input = "foo=bar&baz=qux&zap=zazzle";
+    let expected_output = HashMap::from([("foo", "bar"), ("baz", "qux"), ("zap", "zazzle")]);
+    let output = parse_key_value(input);
+    assert_eq!(output, expected_output);
+}
+
+#[test]
+fn test_ecb_cut_and_paste() {}
+
 // Challenge 12
 
 fn byte_at_a_time_ecb_decrypt(oracle: &ConsistentKey) -> Vec<u8> {
@@ -84,10 +253,7 @@ struct ConsistentKey<'a> {
 impl<'a> ConsistentKey<'a> {
     fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
         let plaintext_with_append: &[u8] = &[plaintext, self.append_text].concat();
-        let plaintext_to_encrypt = pkcs7_pad(
-            plaintext_with_append,
-            plaintext_with_append.len() + 16 - plaintext_with_append.len() % 16,
-        );
+        let plaintext_to_encrypt = pkcs7_pad(plaintext_with_append, 16);
         aes_ecb_encrypt(&plaintext_to_encrypt, self.key)
     }
 }
@@ -167,10 +333,7 @@ fn encrypt_oracle(input: &[u8]) -> (AesBlockCipherMode, Vec<u8>) {
     plaintext.extend(random_bytes.iter());
     plaintext.extend_from_slice(input);
     plaintext.extend(random_bytes.iter());
-    let plaintext = pkcs7_pad(
-        plaintext.as_slice(),
-        plaintext.len() + 16 - (plaintext.len() % 16),
-    );
+    let plaintext = pkcs7_pad(plaintext.as_slice(), 16);
 
     // randomly encrypt using ECB or CBC
     let key = generate_key();
@@ -220,10 +383,7 @@ fn aes_cbc_encrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
 fn test_aes_cbc_encrypt() {
     let mut rng = thread_rng();
     let plaintext: Vec<u8> = (0..rng.gen_range(16..256)).map(|_| rng.gen()).collect();
-    let plaintext = pkcs7_pad(
-        plaintext.as_slice(),
-        plaintext.len() + 16 - (plaintext.len() % 16),
-    );
+    let plaintext = pkcs7_pad(plaintext.as_slice(), 16);
     println!("{}", plaintext.len() % 16);
     let key = generate_key();
     println!("{}", key.len());
@@ -250,10 +410,7 @@ fn aes_ecb_encrypt(input: &[u8], key: &[u8]) -> Vec<u8> {
 fn test_aes_ecb_encrypt() {
     let mut rng = thread_rng();
     let plaintext: Vec<u8> = (0..rng.gen_range(16..256)).map(|_| rng.gen()).collect();
-    let plaintext = pkcs7_pad(
-        plaintext.as_slice(),
-        plaintext.len() + 16 - (plaintext.len() % 16),
-    );
+    let plaintext = pkcs7_pad(plaintext.as_slice(), 16);
     println!("{}", plaintext.len() % 16);
     let key = generate_key();
     let ciphertext = aes_ecb_encrypt(&plaintext, &key);
@@ -300,12 +457,16 @@ fn test_aes_cbc_decrypt() {
 
 // Challenge 9
 
-fn pkcs7_pad(input: &[u8], length: usize) -> Vec<u8> {
-    let pad_len = length - input.len();
-    let pad_len: u8 = pad_len.try_into().unwrap();
-    let mut output = input.to_vec();
-    output.extend(vec![pad_len; pad_len as usize].into_iter());
-    output
+fn pkcs7_pad(input: &[u8], block_size: usize) -> Vec<u8> {
+    if block_size > input.len() {
+        let pad_len = block_size - input.len();
+        let pad_len: u8 = pad_len.try_into().unwrap();
+        let mut output = input.to_vec();
+        output.extend(vec![pad_len; pad_len as usize].into_iter());
+        output
+    } else {
+        pkcs7_pad(input, input.len() + block_size - (input.len() % block_size))
+    }
 }
 
 #[test]
