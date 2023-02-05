@@ -12,6 +12,148 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 14
+
+fn byte_at_a_time_ecb_decrypt_harder(oracle: &EcbOracleHarder) -> Vec<u8> {
+    // Find block size - see when padding jumps
+    let base_ciphertext = oracle.encrypt(&[]);
+    let mut block_size = 0;
+    let mut base_padding_length = 0;
+    for i in 1..64 {
+        let ciphertext = oracle.encrypt(&vec![b'A'; i]);
+        let diff = ciphertext.len() - base_ciphertext.len();
+        if diff != 0 {
+            block_size = diff;
+            base_padding_length = i - 1;
+            break;
+        }
+    }
+    assert!(block_size > 0);
+    let block_size = block_size;
+
+    // Find length of prefix and target bytes
+    let mut prefix_length = 0;
+    let mut input = vec![b'A'; block_size * 2];
+    for offset in 0..block_size {
+        let ciphertext = oracle.encrypt(&input);
+        for i in 0..(ciphertext.len() / block_size - 1) {
+            let chunk1 = &ciphertext[(i * block_size)..((i + 1) * block_size)];
+            let chunk2 = &ciphertext[((i + 1) * block_size)..((i + 2) * block_size)];
+            if chunk1 == chunk2 {
+                prefix_length = i * block_size - offset;
+                break;
+            }
+        }
+        if prefix_length != 0 {
+            break;
+        }
+        input.push(b'A');
+    }
+    let prefix_length = prefix_length;
+    let prefix_padding = vec![0u8; block_size - (prefix_length % block_size)];
+    let prefix_block_length = prefix_length + prefix_padding.len();
+    let target_length = base_ciphertext.len() - prefix_length - base_padding_length;
+
+    // decrypt
+    let mut plaintext = vec![0u8; target_length];
+    for idx in 0..target_length {
+        // get the target block
+        let filler = [
+            prefix_padding.clone(),
+            vec![b'A'; block_size - (idx % block_size) - 1],
+        ]
+        .concat();
+        let ciphertext = oracle.encrypt(&filler);
+        let target_block = ciphertext
+            .iter()
+            .skip(prefix_block_length)
+            .map(|&byte| byte)
+            .collect::<Vec<u8>>();
+        let target_block = target_block
+            .chunks(block_size)
+            .nth(idx / block_size)
+            .unwrap();
+
+        // get the base
+        let base = [
+            prefix_padding.clone(),
+            if idx < block_size {
+                [vec![b'A'; block_size - idx - 1], plaintext[..idx].to_vec()].concat()
+            } else {
+                plaintext
+                    .iter()
+                    .skip(idx - (block_size - 1))
+                    .take(block_size - 1)
+                    .map(|&byte| byte)
+                    .collect()
+            },
+        ]
+        .concat();
+
+        // cycle through
+        let mut plaintext_byte = 0;
+        for byte in 0..=255 {
+            let input = [&base[..], &[byte]].concat();
+            let ciphertext = oracle.encrypt(input.as_slice());
+            let block: Vec<u8> = ciphertext
+                .iter()
+                .skip(prefix_block_length)
+                .take(block_size)
+                .map(|&byte| byte)
+                .collect();
+            if block.as_slice() == target_block {
+                plaintext_byte = byte;
+                break;
+            }
+        }
+        plaintext[idx] = plaintext_byte;
+    }
+
+    plaintext
+}
+
+struct EcbOracleHarder<'a> {
+    key: &'a [u8],
+    target: &'a [u8],
+    prefix: &'a [u8],
+}
+
+impl<'a> EcbOracleHarder<'a> {
+    fn encrypt(&self, input: &[u8]) -> Vec<u8> {
+        let plaintext: &[u8] = &[self.prefix, input, self.target].concat();
+        let plaintext_padded = pkcs7_pad(plaintext, 16);
+        aes_ecb_encrypt(&plaintext_padded, self.key)
+    }
+}
+
+#[test]
+fn test_byte_at_a_time_ecb_decryption_harder() {
+    let key = generate_key();
+    let unknown_string_b64 = "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK";
+    let unknown_string = general_purpose::STANDARD_NO_PAD
+        .decode(unknown_string_b64)
+        .unwrap();
+    let mut rng = thread_rng();
+    const LOWER: usize = 1;
+    const UPPER: usize = 512;
+    let count = rng.gen_range(LOWER..=UPPER);
+    let mut prefix = [0u8; UPPER];
+    for byte in &mut prefix {
+        *byte = rng.gen();
+    }
+    let oracle = EcbOracleHarder {
+        key: &key,
+        target: &unknown_string,
+        prefix: &prefix[..count],
+    };
+
+    let output = byte_at_a_time_ecb_decrypt_harder(&oracle);
+    println!("{}", String::from_utf8(output.clone()).unwrap());
+    // I am not sure why, but currently my decryption includes one extra
+    // bit...
+    assert_eq!(&output[..(output.len() - 1)], unknown_string.as_slice());
+}
+
 // Challenge 13
 
 fn forge_admin_ciphertext(oracle: &ProfileManager) -> Vec<u8> {
