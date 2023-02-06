@@ -4,12 +4,49 @@ use base64::{engine::general_purpose, Engine};
 use hex;
 use rand::{thread_rng, Rng, RngCore};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::io::prelude::*;
 use std::str::FromStr;
+use thiserror::Error;
 
 fn main() {
     println!("Hello, world!");
+}
+
+// Challenge 15
+
+#[derive(Error, Debug)]
+enum MyError {
+    #[error("Invalid PKCS#7 padding")]
+    InvalidPkcs7Padding,
+}
+
+fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
+    assert!(!input.is_empty());
+    let last_byte = *input.last().unwrap();
+    if last_byte as usize > input.len() {
+        return Err(MyError::InvalidPkcs7Padding);
+    }
+    let is_padded = input[(input.len() - last_byte as usize)..]
+        .iter()
+        .all(|&b| b == last_byte);
+    if is_padded {
+        Ok(input[..(input.len() - last_byte as usize)].to_vec())
+    } else {
+        Err(MyError::InvalidPkcs7Padding)
+    }
+}
+
+#[test]
+fn test_pkcs7_unpad() {
+    let input = b"ICE ICE BABY\x04\x04\x04\x04";
+    let input_bad_1 = b"ICE ICE BABY\x05\x05\x05\x05";
+    let input_bad_2 = b"ICE ICE BABY\x01\x02\x03\x04";
+
+    assert!(pkcs7_unpad(input).unwrap() == b"ICE ICE BABY");
+    assert!(pkcs7_unpad(input_bad_1).is_err());
+    assert!(pkcs7_unpad(input_bad_2).is_err());
 }
 
 // Challenge 14
@@ -190,7 +227,7 @@ impl<'a> ProfileManager<'a> {
     }
 
     fn add_profile(&self, ciphertext: &'a [u8]) -> UserProfile {
-        let plaintext = pkcs7_unpad(&aes_ecb_decrypt(ciphertext, self.key));
+        let plaintext = pkcs7_unpad_unchecked(&aes_ecb_decrypt(ciphertext, self.key));
         let profile = UserProfile::decode(std::str::from_utf8(&plaintext).unwrap());
         // (add profile)
         profile
@@ -590,7 +627,8 @@ fn test_aes_cbc_decrypt() {
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
 
-    let output = pkcs7_unpad(aes_cbc_decrypt(contents.as_slice(), key.as_bytes(), iv).as_slice());
+    let output =
+        pkcs7_unpad_unchecked(aes_cbc_decrypt(contents.as_slice(), key.as_bytes(), iv).as_slice());
     assert_eq!(output, expected_output);
 }
 
@@ -655,7 +693,7 @@ fn test_detect_aes_ecb() {
 
 // Challenge 7
 
-fn pkcs7_unpad(input: &[u8]) -> Vec<u8> {
+fn pkcs7_unpad_unchecked(input: &[u8]) -> Vec<u8> {
     assert!(!input.is_empty());
     let last_byte = *input.last().unwrap();
     if last_byte as usize > input.len() {
@@ -698,7 +736,7 @@ fn test_aes_ecb_decrypt() {
     file.read_to_string(&mut expected_output).unwrap();
     let expected_output = expected_output.into_bytes();
 
-    let output = pkcs7_unpad(aes_ecb_decrypt(&contents, &key).as_slice());
+    let output = pkcs7_unpad_unchecked(aes_ecb_decrypt(&contents, &key).as_slice());
     assert_eq!(output, expected_output);
 }
 
