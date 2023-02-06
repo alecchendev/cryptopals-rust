@@ -2,7 +2,7 @@ use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyIn
 use aes::Aes128;
 use base64::{engine::general_purpose, Engine};
 use hex;
-use rand::{thread_rng, Rng};
+use rand::{thread_rng, Rng, RngCore};
 use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
@@ -425,11 +425,8 @@ fn test_byte_at_a_time_ecb_decryption_simple() {
 // Challenge 11
 
 fn generate_key() -> [u8; 16] {
-    let mut rng = thread_rng();
     let mut key = [0; 16];
-    for byte in &mut key {
-        *byte = rng.gen();
-    }
+    thread_rng().fill_bytes(&mut key);
     key
 }
 
