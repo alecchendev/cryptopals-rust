@@ -4,19 +4,189 @@ use base64::{engine::general_purpose, Engine};
 use hex;
 use rand::{thread_rng, Rng, RngCore};
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::io::prelude::*;
 use std::str::FromStr;
-use thiserror::Error;
+use thiserror;
 
 fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 16
+
+fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
+    // produce two ciphertext blocks
+    // one that decrypts to anything
+    // one that when decrypted and xor'd with the previous ciphertext produces "admin=true;"
+
+    // Fix second block
+    // turn final block into admin=true using padding
+    // Find block size - see when padding jumps
+    let base_ciphertext = oracle.encrypt(&[]);
+    let mut block_size = 0;
+    for i in 1..64 {
+        let ciphertext = oracle.encrypt(&vec![b'A'; i]);
+        let diff = ciphertext.len() - base_ciphertext.len();
+        if diff != 0 {
+            block_size = diff;
+            break;
+        }
+    }
+    assert!(block_size > 0);
+    let block_size = block_size;
+
+    // ----- ----- encrypt oracle time ----- -----
+    // find where my input is (fill padding, modify a block and see what blocks of ciphertext change)
+    // isolate two blocks (have filler up until these (userdata=asdfasdfasdf|block|block|suffix))
+    // get base ciphertext block
+
+    let mut input1 = vec![0u8; block_size];
+    thread_rng().fill_bytes(&mut input1);
+    while input1.contains(&b';') || input1.contains(&b'=') {
+        thread_rng().fill_bytes(&mut input1);
+    }
+    let ciphertext1 = oracle.encrypt(&input1);
+    let mut input2 = vec![0u8; block_size];
+    thread_rng().fill_bytes(&mut input2);
+    while input2.contains(&b';') || input2.contains(&b'=') {
+        thread_rng().fill_bytes(&mut input2);
+    }
+    let ciphertext2 = oracle.encrypt(&input2);
+    let prefix_length = ciphertext1
+        .iter()
+        .enumerate()
+        .take_while(|&(i, &byte)| byte == ciphertext2[i])
+        .map(|(_, &byte)| byte)
+        .collect::<Vec<u8>>()
+        .len();
+
+    let prefix_padding_length = if prefix_length % block_size != 0 {
+        block_size - (prefix_length % block_size)
+    } else {
+        0
+    };
+    let prefix_padding = vec![b'A'; prefix_padding_length];
+    let change_block = vec![b'A'; block_size];
+    let admin_block = vec![b'A'; block_size];
+    let initial_ciphertext = oracle.encrypt(
+        &[
+            prefix_padding.as_slice(),
+            change_block.as_slice(),
+            admin_block.as_slice(),
+        ]
+        .concat(),
+    );
+
+    // ----- ----- padding oracle time ----- -----
+    // modify first ciphertext block, chop everything after second block
+    // use padding oracle to be able to easily manipulate/overwrite plaintext
+    // form final ciphertext blocks
+
+    let mut working_input = initial_ciphertext[..(prefix_length + 2 * block_size)].to_vec();
+    let mut breaking_ciphertext = initial_ciphertext.clone();
+    let target = b";admin=true";
+    for i in 0..target.len() {
+        let target_byte = target[target.len() - 1 - i];
+        let pad_byte = i as u8 + 1;
+
+        let start_of_admin_block_idx = prefix_length + block_size;
+        let ciphertext_idx = start_of_admin_block_idx - 1 - i;
+
+        let mut input = working_input.clone();
+        for j in (ciphertext_idx + 1)..start_of_admin_block_idx {
+            input[j] ^= pad_byte;
+        }
+
+        for byte in 0..=255 {
+            input[ciphertext_idx] = byte;
+            let result = oracle.check_admin(&input);
+            if result.is_ok() {
+                // padding is good -> change_block ^ decrypted = pad_byte
+                breaking_ciphertext[ciphertext_idx] =
+                    input[ciphertext_idx] ^ pad_byte ^ target_byte;
+                working_input[ciphertext_idx] = input[ciphertext_idx] ^ pad_byte; // end result will be 0
+                break;
+            } else {
+                // padding is bad
+                continue;
+            }
+        }
+    }
+
+    // ----- ----- imagined formation ----- -----
+    // Encrypted
+    // |prefixprefixpref|prefixpre...fill|my_modified_blok|aaaaaaaaaaaaaaaa|suffixsuffixpadd|
+    // Decrypted
+    // |prefixprefixpref|p...userdata=fil|fillerfillerfill|fille;admin=true|suffixsuffixpadd|
+
+    breaking_ciphertext
+}
+
+struct CbcBitFlippingOracle<'a> {
+    key: &'a [u8; 16],
+    iv: &'a [u8; 16],
+    prefix: &'a [u8],
+    suffix: &'a [u8],
+}
+
+impl<'a> CbcBitFlippingOracle<'a> {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        // reject if plaintext includes ";" and "="
+        assert!(!plaintext.contains(&b';') && !plaintext.contains(&b'='));
+        // prepend, append, pad
+        let input = pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), 16);
+        // encrypt
+        aes_cbc_encrypt(&input, self.key, self.iv)
+    }
+
+    fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, Box<dyn Error>> {
+        // decrypt
+        let padded_plaintext = aes_cbc_decrypt(ciphertext, self.key, self.iv);
+        let plaintext = pkcs7_unpad(&padded_plaintext)?;
+
+        // split on ";"
+        for piece in plaintext.split(|&x| x == ';' as u8) {
+            // convert each to 2-tuples
+            let p: Vec<&[u8]> = piece.split(|&x| x == '=' as u8).collect();
+            if p.len() != 2 {
+                continue;
+            }
+            let (key, value) = (p[0], p[1]);
+            // check for admin tuple
+            if key == b"admin" && value == b"true" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[test]
+fn test_cbc_bit_flipping() {
+    for _ in 0..15 {
+        let oracle = CbcBitFlippingOracle {
+            key: &generate_key(),
+            iv: &generate_key(),
+            prefix: "comment1=cooking%20MCs;userdata=".as_bytes(),
+            suffix: ";comment2=%20like%20a%20pound%20of%20bacon".as_bytes(),
+        };
+
+        let breaking_ciphertext = cbc_bit_flipping_attack(&oracle);
+        let result = oracle.check_admin(&breaking_ciphertext);
+        assert!(if let Ok(is_admin) = result {
+            is_admin
+        } else {
+            false
+        });
+    }
+}
+
 // Challenge 15
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 enum MyError {
     #[error("Invalid PKCS#7 padding")]
     InvalidPkcs7Padding,
@@ -25,7 +195,7 @@ enum MyError {
 fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
     assert!(!input.is_empty());
     let last_byte = *input.last().unwrap();
-    if last_byte as usize > input.len() {
+    if last_byte == 0 || last_byte > 16 {
         return Err(MyError::InvalidPkcs7Padding);
     }
     let is_padded = input[(input.len() - last_byte as usize)..]
@@ -40,13 +210,17 @@ fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
 
 #[test]
 fn test_pkcs7_unpad() {
-    let input = b"ICE ICE BABY\x04\x04\x04\x04";
+    let input_good_1 = b"ICE ICE BABY\x04\x04\x04\x04";
+    let input_good_2 = [[b'A'; 16], [16; 16]].concat();
     let input_bad_1 = b"ICE ICE BABY\x05\x05\x05\x05";
     let input_bad_2 = b"ICE ICE BABY\x01\x02\x03\x04";
+    let input_bad_3 = b"asdfasdfasdfasdf";
 
-    assert!(pkcs7_unpad(input).unwrap() == b"ICE ICE BABY");
+    assert!(pkcs7_unpad(input_good_1).unwrap() == b"ICE ICE BABY".to_vec());
+    assert!(pkcs7_unpad(&input_good_2).unwrap() == vec![b'A'; 16]);
     assert!(pkcs7_unpad(input_bad_1).is_err());
     assert!(pkcs7_unpad(input_bad_2).is_err());
+    assert!(pkcs7_unpad(input_bad_3).is_err());
 }
 
 // Challenge 14
@@ -635,15 +809,18 @@ fn test_aes_cbc_decrypt() {
 // Challenge 9
 
 fn pkcs7_pad(input: &[u8], block_size: usize) -> Vec<u8> {
-    if block_size > input.len() {
-        let pad_len = block_size - input.len();
-        let pad_len: u8 = pad_len.try_into().unwrap();
-        let mut output = input.to_vec();
-        output.extend(vec![pad_len; pad_len as usize].into_iter());
-        output
-    } else {
-        pkcs7_pad(input, input.len() + block_size - (input.len() % block_size))
-    }
+    let padding_length = block_size - (input.len() % block_size);
+    [input, &vec![padding_length as u8; padding_length]].concat()
+
+    // if block_size > input.len() {
+    //     let pad_len = block_size - input.len();
+    //     let pad_len: u8 = pad_len.try_into().unwrap();
+    //     let mut output = input.to_vec();
+    //     output.extend(vec![pad_len; pad_len as usize].into_iter());
+    //     output
+    // } else {
+    //     pkcs7_pad(input, input.len() + block_size - (input.len() % block_size))
+    // }
 }
 
 #[test]
