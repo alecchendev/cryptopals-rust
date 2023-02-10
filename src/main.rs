@@ -15,6 +15,124 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 17
+
+fn cbc_padding_oracle_attack(ciphertext: &[u8], iv: &[u8], oracle: &CbcPaddingOracle) -> Vec<u8> {
+    // Assume block size
+    let block_size = 16;
+
+    // decrypt
+    let mut plaintext = vec![];
+    for (block_idx, block) in ciphertext.chunks(block_size).enumerate().rev() {
+        let mut prev_block = if block_idx == 0 {
+            iv.to_owned()
+        } else {
+            ciphertext
+                .chunks(block_size)
+                .nth(block_idx - 1)
+                .unwrap()
+                .to_owned()
+        };
+
+        let base: Vec<u8> = if block_idx == 0 {
+            vec![]
+        } else {
+            ciphertext
+                .iter()
+                .take((block_idx - 1) * 16)
+                .map(|&byte| byte)
+                .collect()
+        };
+
+        let mut plaintext_block = vec![0u8; block.len()];
+        for byte_idx in (0..block.len()).rev() {
+            let pad_byte = (block_size - byte_idx) as u8;
+
+            let mut working_prev_block = prev_block.clone();
+            for i in (byte_idx + 1)..block.len() {
+                working_prev_block[i] ^= pad_byte;
+            }
+            for byte in 0..=255 {
+                if block_idx == ciphertext.chunks(block_size).len() - 1
+                    && byte_idx == block.len() - 1
+                    && byte == prev_block[byte_idx]
+                {
+                    continue;
+                }
+                working_prev_block[byte_idx] = byte;
+                let input = [base.as_slice(), working_prev_block.as_slice(), block].concat();
+                if oracle.check_valid_padding(&input) {
+                    // decrypted[byte_idx] ^ working_prev_block[byte_idx] = pad_byte
+                    println!("byte: {}\npad_byte: {}", byte, pad_byte);
+                    plaintext_block[byte_idx] = prev_block[byte_idx] ^ byte ^ pad_byte;
+                    prev_block[byte_idx] = byte ^ pad_byte;
+                    break;
+                }
+            }
+        }
+        plaintext = [plaintext_block, plaintext].concat();
+    }
+
+    plaintext
+}
+
+struct CbcPaddingOracle<'a> {
+    key: &'a [u8; 16],
+    iv: &'a [u8; 16],
+    plaintexts: Vec<Vec<u8>>,
+}
+
+impl<'a> CbcPaddingOracle<'a> {
+    fn encrypt(&self) -> (Vec<u8>, [u8; 16], usize) {
+        // pick random
+        let idx = thread_rng().gen_range(0..self.plaintexts.len());
+        let plaintext = &self.plaintexts[idx];
+        // pad
+        let padded_plaintext = pkcs7_pad(plaintext, 16);
+        // aes cbc encrypt
+        let ciphertext = aes_cbc_encrypt(&padded_plaintext, self.key, self.iv);
+        // return ciphertext and iv
+        (ciphertext, self.iv.to_owned(), idx)
+    }
+
+    fn check_valid_padding(&self, ciphertext: &[u8]) -> bool {
+        let padded_plaintext = aes_cbc_decrypt(ciphertext, self.key, self.iv);
+        println!("{:?}", padded_plaintext.chunks(16).last().unwrap());
+        pkcs7_unpad(&padded_plaintext).is_ok()
+    }
+}
+
+#[test]
+fn test_cbc_padding_oracle_attack() {
+    let plaintexts = vec![
+        "MDAwMDAwTm93IHRoYXQgdGhlIHBhcnR5IGlzIGp1bXBpbmc=",
+        "MDAwMDAxV2l0aCB0aGUgYmFzcyBraWNrZWQgaW4gYW5kIHRoZSBWZWdhJ3MgYXJlIHB1bXBpbic=",
+        "MDAwMDAyUXVpY2sgdG8gdGhlIHBvaW50LCB0byB0aGUgcG9pbnQsIG5vIGZha2luZw==",
+        "MDAwMDAzQ29va2luZyBNQydzIGxpa2UgYSBwb3VuZCBvZiBiYWNvbg==",
+        "MDAwMDA0QnVybmluZyAnZW0sIGlmIHlvdSBhaW4ndCBxdWljayBhbmQgbmltYmxl",
+        "MDAwMDA1SSBnbyBjcmF6eSB3aGVuIEkgaGVhciBhIGN5bWJhbA==",
+        "MDAwMDA2QW5kIGEgaGlnaCBoYXQgd2l0aCBhIHNvdXBlZCB1cCB0ZW1wbw==",
+        "MDAwMDA3SSdtIG9uIGEgcm9sbCwgaXQncyB0aW1lIHRvIGdvIHNvbG8=",
+        "MDAwMDA4b2xsaW4nIGluIG15IGZpdmUgcG9pbnQgb2g=",
+        "MDAwMDA5aXRoIG15IHJhZy10b3AgZG93biBzbyBteSBoYWlyIGNhbiBibG93",
+    ];
+    let plaintexts: Vec<Vec<u8>> = plaintexts
+        .iter()
+        .map(|b64| general_purpose::STANDARD.decode(b64.as_bytes()).unwrap())
+        .collect();
+    let key = &generate_key();
+    let iv = &generate_key();
+    let oracle = CbcPaddingOracle {
+        key,
+        iv,
+        plaintexts: plaintexts.clone(),
+    };
+    let (ciphertext, iv, idx) = oracle.encrypt();
+
+    let output = cbc_padding_oracle_attack(&ciphertext, &iv, &oracle);
+    assert_eq!(output, pkcs7_pad(&plaintexts[idx], 16));
+}
+
 // Challenge 16
 
 fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
