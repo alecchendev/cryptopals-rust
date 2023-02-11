@@ -15,6 +15,45 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 18
+
+fn aes_ctr_encrypt(plaintext: &[u8], key: &[u8; 16], nonce: u64) -> Vec<u8> {
+    let block_size = 16;
+    let mut ciphertext = vec![];
+    for (i, chunk) in plaintext.chunks(block_size).enumerate() {
+        let nonce_counter = [nonce.to_le_bytes(), (i as u64).to_le_bytes()].concat();
+        let keystream = aes_ecb_encrypt(&nonce_counter, key);
+        let ciphertext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
+        ciphertext.extend_from_slice(&ciphertext_chunk);
+    }
+    ciphertext
+}
+
+fn aes_ctr_decrypt(ciphertext: &[u8], key: &[u8; 16], nonce: u64) -> Vec<u8> {
+    let block_size = 16;
+    let mut plaintext = vec![];
+    for (i, chunk) in ciphertext.chunks(block_size).enumerate() {
+        let nonce_counter = [nonce.to_le_bytes(), (i as u64).to_le_bytes()].concat();
+        let keystream = aes_ecb_encrypt(&nonce_counter, key);
+        let plaintext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
+        plaintext.extend_from_slice(&plaintext_chunk);
+    }
+    plaintext
+}
+
+#[test]
+fn test_aes_ctr_mode() {
+    let b64_ciphertext =
+        b"L77na/nrFsKvynd6HzOoG7GHTLXsTVu9qvY/2syLXzhPweyyMTJULu/6/kXX0KSvoOLSFQ==";
+    let ciphertext = general_purpose::STANDARD.decode(b64_ciphertext).unwrap();
+    let key = b"YELLOW SUBMARINE";
+    let nonce = 0;
+    let expected_output = b"Yo, VIP Let's kick it Ice, Ice, baby Ice, Ice, baby ".to_vec();
+    let output = aes_ctr_decrypt(&ciphertext, key, nonce);
+    assert_eq!(output, expected_output);
+    assert_eq!(aes_ctr_encrypt(&output, key, nonce), ciphertext);
+}
+
 // Challenge 17
 
 fn cbc_padding_oracle_attack(ciphertext: &[u8], iv: &[u8], oracle: &CbcPaddingOracle) -> Vec<u8> {
