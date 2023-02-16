@@ -15,6 +15,56 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 20
+
+fn fixed_nonce_ctr_attack(ciphertexts: &[&[u8]]) -> Vec<u8> {
+    let transposed = transpose_blocks(ciphertexts);
+
+    let mut key_stream = vec![];
+    for block in transposed.into_iter() {
+        let (_score, single_byte_key, _plaintext) = decrypt_single_byte_xor(block);
+        key_stream.push(single_byte_key);
+    }
+
+    key_stream
+}
+
+#[test]
+fn test_fixed_nonce_ctr_attack() {
+    let mut file = fs::File::open("data/20_sol.txt").unwrap();
+    let mut solution_contents = String::new();
+    file.read_to_string(&mut solution_contents).unwrap();
+    let solution: Vec<&[u8]> = solution_contents.lines().map(|l| l.as_bytes()).collect();
+
+    let mut file = fs::File::open("data/20.txt").unwrap();
+    let mut file_contents = String::new();
+    file.read_to_string(&mut file_contents).unwrap();
+    let plaintexts: Vec<Vec<u8>> = file_contents
+        .lines()
+        .map(|line| general_purpose::STANDARD.decode(line).unwrap())
+        .collect();
+    let plaintexts: Vec<&[u8]> = plaintexts.iter().map(|v| v.as_slice()).collect();
+
+    let key = generate_key();
+    let ciphertexts: Vec<Vec<u8>> = plaintexts
+        .iter()
+        .map(|&plaintext| aes_ctr_encrypt(&plaintext, &key, 0))
+        .collect();
+    let ciphertexts: Vec<&[u8]> = ciphertexts.iter().map(|c| c.as_slice()).collect();
+    let shortest_length = ciphertexts
+        .iter()
+        .map(|c| c.len())
+        .reduce(|min_len, len| std::cmp::min(min_len, len))
+        .unwrap();
+    let ciphertexts: Vec<&[u8]> = ciphertexts.iter().map(|c| &c[..shortest_length]).collect();
+
+    let key_stream = fixed_nonce_ctr_attack(&ciphertexts);
+    let output: Vec<Vec<u8>> = ciphertexts.iter().map(|c| repeating_key_xor(&key_stream, c)).collect();
+    let output: Vec<&[u8]> = output.iter().map(|v| v.as_slice()).collect();
+    assert_eq!(output, solution);
+
+}
+
 // Challenge 18
 
 fn aes_ctr_encrypt(plaintext: &[u8], key: &[u8; 16], nonce: u64) -> Vec<u8> {
@@ -633,7 +683,7 @@ impl UserProfile {
 #[test]
 fn test_add_profile() {
     let key = generate_key();
-    let mut profile_manager = ProfileManager::new(&key);
+    let profile_manager = ProfileManager::new(&key);
     let input = "foo@bar.com";
     let expected_output = UserProfile {
         email: String::from(input),
@@ -649,7 +699,7 @@ fn test_profile_for() {
     let input = "foo@bar.com";
     let input2 = "bar@foo.com";
     let key = generate_key();
-    let mut profile_manager = ProfileManager::new(&key);
+    let profile_manager = ProfileManager::new(&key);
     let expected_output = "email=foo@bar.com&uid=10&role=user";
     let output = profile_manager.profile_for(input);
     assert_eq!(output, expected_output);
@@ -663,7 +713,7 @@ fn test_profile_for() {
 fn test_profile_for_panic() {
     let bad_input = "foo@bar.com&role=admin";
     let key = generate_key();
-    let mut profile_manager = ProfileManager::new(&key);
+    let profile_manager = ProfileManager::new(&key);
     profile_manager.profile_for(bad_input);
 }
 
@@ -968,16 +1018,6 @@ fn test_aes_cbc_decrypt() {
 fn pkcs7_pad(input: &[u8], block_size: usize) -> Vec<u8> {
     let padding_length = block_size - (input.len() % block_size);
     [input, &vec![padding_length as u8; padding_length]].concat()
-
-    // if block_size > input.len() {
-    //     let pad_len = block_size - input.len();
-    //     let pad_len: u8 = pad_len.try_into().unwrap();
-    //     let mut output = input.to_vec();
-    //     output.extend(vec![pad_len; pad_len as usize].into_iter());
-    //     output
-    // } else {
-    //     pkcs7_pad(input, input.len() + block_size - (input.len() % block_size))
-    // }
 }
 
 #[test]
@@ -1118,6 +1158,7 @@ fn decrypt_repeating_key_xor(input: Vec<u8>) -> Vec<u8> {
 
     // Break into key_size blocks
     let blocks = get_blocks(&input, key_size);
+    let blocks: Vec<&[u8]> = blocks.iter().map(|v| v.as_slice()).collect();
 
     // Transpose blocks
     let transposed = transpose_blocks(&blocks);
@@ -1130,7 +1171,7 @@ fn decrypt_repeating_key_xor(input: Vec<u8>) -> Vec<u8> {
     }
 
     // Decrypt
-    repeating_key_xor(key, input)
+    repeating_key_xor(&key, &input)
 }
 
 #[test]
@@ -1149,7 +1190,7 @@ fn test_decrypt_repeating_key_xor() {
     assert_eq!(output, expected_output.into_bytes());
 }
 
-fn transpose_blocks(blocks: &[Vec<u8>]) -> Vec<Vec<u8>> {
+fn transpose_blocks(blocks: &[&[u8]]) -> Vec<Vec<u8>> {
     assert!(!blocks.is_empty());
     let key_size = blocks[0].len();
     let mut transposed = vec![];
@@ -1169,6 +1210,7 @@ fn transpose_blocks(blocks: &[Vec<u8>]) -> Vec<Vec<u8>> {
 #[test]
 fn test_transpose_blocks() {
     let blocks = vec![vec![1, 2, 3], vec![4, 5]];
+    let blocks: Vec<&[u8]> = blocks.iter().map(|v| v.as_slice()).collect();
     assert_eq!(
         transpose_blocks(&blocks),
         vec![vec![1, 4], vec![2, 5], vec![3]]
@@ -1227,7 +1269,7 @@ fn test_hamming_distance() {
 
 // Challenge 5
 
-fn repeating_key_xor(key: Vec<u8>, input: Vec<u8>) -> Vec<u8> {
+fn repeating_key_xor(key: &[u8], input: &[u8]) -> Vec<u8> {
     assert!(!key.is_empty());
     assert!(!input.is_empty());
     let mut output = Vec::new();
@@ -1252,7 +1294,7 @@ I go crazy when I hear a cymbal",
     ))
     .unwrap();
 
-    let output = repeating_key_xor(key, input);
+    let output = repeating_key_xor(&key, &input);
     assert_eq!(output, expected_output);
 }
 
