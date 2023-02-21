@@ -15,6 +15,89 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 21
+
+const N: usize = 624;
+
+struct MersenneTwisterRng {
+    state: [u32; N],
+    index: usize,
+}
+
+impl MersenneTwisterRng {
+    const W: u32 = 32;
+    const R: u32 = 31;
+    const M: usize = 397;
+    const A: u32 = 0x9908B0DF;
+
+    const U: u32 = 11;
+    const D: u32 = 0xFFFFFFFF;
+    const S: u32 = 7;
+    const B: u32 = 0x9D2C5680;
+    const T: u32 = 15;
+    const C: u32 = 0xEFC60000;
+    const L: u32 = 18;
+
+    const F: u64 = 1812433253;
+
+    fn lowest_bits(num: u64) -> u32 {
+        (num & 0xFFFFFFFF) as u32
+    }
+
+    fn new(seed: u32) -> Self {
+        let mut state = [0u32; N];
+        state[0] = seed;
+        for i in 1..N {
+            state[i] = Self::lowest_bits(
+                Self::F * (state[i - 1] ^ (state[i - 1] >> (Self::W - 2))) as u64 + i as u64,
+            );
+        }
+        Self { state, index: N }
+    }
+
+    fn generate(&mut self) -> u32 {
+        assert!(self.index <= N, "Generator was never seeded");
+        if self.index == N {
+            self.twist()
+        }
+        let mut y = self.state[self.index];
+        y ^= (y >> Self::U) & Self::D;
+        y ^= (y << Self::S) & Self::B;
+        y ^= (y << Self::T) & Self::C;
+        y ^= y >> Self::L;
+        self.index += 1;
+        y
+    }
+
+    fn twist(&mut self) {
+        let lower_mask = (1 << Self::R) - 1;
+        let upper_mask = 1 << Self::R;
+        for i in 0..N {
+            let x = (self.state[i] & upper_mask) | (self.state[(i + 1) % N] & lower_mask);
+            let mut x_a = x >> 1;
+            if x & 1 == 1 {
+                x_a = x_a ^ Self::A;
+            }
+            self.state[i] = self.state[(i + Self::M) % N] ^ x_a;
+        }
+        self.index = 0;
+    }
+}
+
+#[test]
+fn test_mt19937_rng() {
+    let expected_results: [u32; 20] = [
+        2124297904, 554800608, 979609483, 319445101, 1097252129, 2619664350, 1702224004, 92067910,
+        1620556005, 653697094, 4280253718, 4100431597, 1753193605, 3456085250, 3315259487,
+        1048960250, 3266480199, 1396711791, 1331480004, 1886800846,
+    ];
+    let seed = 50;
+    let mut rng = MersenneTwisterRng::new(seed);
+    for &result in expected_results.iter() {
+        assert_eq!(rng.generate(), result);
+    }
+}
+
 // Challenge 20
 
 fn fixed_nonce_ctr_attack(ciphertexts: &[&[u8]]) -> Vec<u8> {
@@ -59,10 +142,12 @@ fn test_fixed_nonce_ctr_attack() {
     let ciphertexts: Vec<&[u8]> = ciphertexts.iter().map(|c| &c[..shortest_length]).collect();
 
     let key_stream = fixed_nonce_ctr_attack(&ciphertexts);
-    let output: Vec<Vec<u8>> = ciphertexts.iter().map(|c| repeating_key_xor(&key_stream, c)).collect();
+    let output: Vec<Vec<u8>> = ciphertexts
+        .iter()
+        .map(|c| repeating_key_xor(&key_stream, c))
+        .collect();
     let output: Vec<&[u8]> = output.iter().map(|v| v.as_slice()).collect();
     assert_eq!(output, solution);
-
 }
 
 // Challenge 18
