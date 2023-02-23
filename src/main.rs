@@ -5,14 +5,74 @@ use hex;
 use rand::{thread_rng, Rng, RngCore};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt;
+use std::{fmt, thread};
 use std::fs;
 use std::io::prelude::*;
 use std::str::FromStr;
 use thiserror;
+use std::time::{UNIX_EPOCH, SystemTime, Duration};
 
 fn main() {
     println!("Hello, world!");
+}
+
+// Challenge 22
+
+fn crack_mt19937_time_seed(num: u32) -> Option<u32> {
+    // assume the seed has been generated in the past x seconds
+    let max_secs_passed = 60 * 24 * 7; // one week
+    let max_generated = 1000;
+    for secs_passed in 0..=max_secs_passed {
+        // time if generated secs_passed ago
+        let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32 - secs_passed;
+        let mut rng = MersenneTwisterRng::new(seed);
+        for _ in 0..max_generated {
+            if rng.generate() == num {
+                return Some(seed);
+            }
+        }
+    }
+    None
+}
+
+fn gen_wait_time() -> u32 {
+    thread_rng().gen_range(40..=1000)
+}
+
+fn wait_random() {
+    let wait_time = Duration::new(gen_wait_time().into(), 0);
+    thread::sleep(wait_time);
+}
+
+#[cfg(wait)]
+#[test]
+fn test_crack_mt19937_time_seed_wait() {
+    wait_random();
+
+    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+
+    let mut rng = MersenneTwisterRng::new(seed);
+
+    wait_random();
+
+    let rand_num = rng.generate();
+    let cracked_seed = crack_mt19937_time_seed(rand_num).unwrap();
+
+    assert_eq!(cracked_seed, seed);
+}
+
+#[test]
+fn test_crack_mt19937_time_seed() {
+
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+    let seed = current_time - gen_wait_time();
+
+    let mut rng = MersenneTwisterRng::new(seed);
+
+    let rand_num = rng.generate();
+    let cracked_seed = crack_mt19937_time_seed(rand_num).unwrap();
+
+    assert_eq!(cracked_seed, seed);
 }
 
 // Challenge 21
