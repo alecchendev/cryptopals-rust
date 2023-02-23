@@ -16,6 +16,101 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 23
+
+fn clone_mt19937(orig: &mut MersenneTwisterRng) -> MersenneTwisterRng {
+    let shift = [mt::U, mt::S, mt::T, mt::L];
+    let magic = [mt::D, mt::B, mt::C];
+    let mut state = [0u32; mt::N];
+    for elem in state.iter_mut() {
+        let output = orig.generate();
+        *elem = invert_temper(output, &shift, &magic);
+    }
+    MersenneTwisterRng::new_from_state(&state)
+}
+
+#[test]
+fn test_clone_mt19937() {
+    let seed: u32 = thread_rng().gen();
+    let rng_init = MersenneTwisterRng::new(seed);
+    let mut rng_mut = MersenneTwisterRng::new(seed);
+    let rng_clone = clone_mt19937(&mut rng_mut);
+    assert_eq!(rng_clone, rng_init);
+}
+
+
+fn invert_right(output: u32, shift: u32, magic: u32) -> u32 {
+    assert_ne!(shift, 0);
+    let mut mask = !((1 << (32 - shift)) - 1);
+    let mut input = output & mask;
+    for _ in 0..((32 + shift - 1) / shift) {
+        let in_bytes = output ^ ((input >> shift) & magic);
+        mask = mask >> shift;
+        input |= in_bytes & mask;
+    }
+    input
+}
+
+#[test]
+fn test_invert_right() {
+    for _ in 0..20 {
+        let shift = thread_rng().gen_range(1..32);
+        let magic: u32 = thread_rng().gen();
+        let input: u32 = thread_rng().gen();
+        let output = input ^ ((input >> shift) & magic);
+        assert_eq!(invert_right(output, shift, magic), input);
+    }
+}
+
+fn invert_left(output: u32, shift: u32, magic: u32) -> u32 {
+    assert_ne!(shift, 0);
+    let mut mask = (1 << shift) - 1;
+    let mut input = output & mask;
+    for _ in 0..((32 + shift - 1) / shift) {
+        let in_bytes = output ^ ((input << shift) & magic);
+        mask = mask << shift;
+        input |= in_bytes & mask;
+    }
+    input
+}
+
+#[test]
+fn test_invert_left() {
+    for _ in 0..20 {
+        let shift = thread_rng().gen_range(1..32);
+        let magic: u32 = thread_rng().gen();
+        let input: u32 = thread_rng().gen();
+        let output = input ^ ((input << shift) & magic);
+        assert_eq!(invert_left(output, shift, magic), input);
+    }
+}
+
+fn invert_temper(out: u32, shift: &[u32; 4], magic: &[u32; 3]) -> u32 {
+    let out = invert_right(out, shift[3], 0xFFFFFFFF);
+    let out = invert_left(out, shift[2], magic[2]);
+    let out = invert_left(out, shift[1], magic[1]);
+    invert_right(out, shift[0], magic[0])
+}
+
+#[test]
+fn test_invert_temper() {
+    for _ in 0..20 {
+        let input: u32 = thread_rng().gen();
+        let mut output = input;
+        let mut shift = [0u32; 4];
+        for num in shift.iter_mut() {
+            *num = thread_rng().gen_range(1..32);
+        }
+        let mut magic = [0u32; 3];
+        thread_rng().fill(&mut magic);
+        output ^= (output >> shift[0]) & magic[0];
+        output ^= (output << shift[1]) & magic[1];
+        output ^= (output << shift[2]) & magic[2];
+        output ^= output >> shift[3];
+        assert_eq!(invert_temper(output, &shift, &magic), input);
+    }
+}
+
 // Challenge 22
 
 fn crack_mt19937_time_seed(num: u32) -> Option<u32> {
@@ -77,68 +172,77 @@ fn test_crack_mt19937_time_seed() {
 
 // Challenge 21
 
-const N: usize = 624;
+mod mt {
+    pub const N: usize = 624;
 
+    pub const F: u64 = 1812433253;
+
+    pub const W: u32 = 32;
+    pub const R: u32 = 31;
+    pub const M: usize = 397;
+    pub const A: u32 = 0x9908B0DF;
+
+    pub const U: u32 = 11;
+    pub const D: u32 = 0xFFFFFFFF;
+    pub const S: u32 = 7;
+    pub const B: u32 = 0x9D2C5680;
+    pub const T: u32 = 15;
+    pub const C: u32 = 0xEFC60000;
+    pub const L: u32 = 18;
+}
+
+#[derive(Debug, PartialEq)]
 struct MersenneTwisterRng {
-    state: [u32; N],
+    state: [u32; mt::N],
     index: usize,
 }
 
 impl MersenneTwisterRng {
-    const W: u32 = 32;
-    const R: u32 = 31;
-    const M: usize = 397;
-    const A: u32 = 0x9908B0DF;
-
-    const U: u32 = 11;
-    const D: u32 = 0xFFFFFFFF;
-    const S: u32 = 7;
-    const B: u32 = 0x9D2C5680;
-    const T: u32 = 15;
-    const C: u32 = 0xEFC60000;
-    const L: u32 = 18;
-
-    const F: u64 = 1812433253;
-
     fn lowest_bits(num: u64) -> u32 {
         (num & 0xFFFFFFFF) as u32
     }
 
     fn new(seed: u32) -> Self {
-        let mut state = [0u32; N];
+        let mut state = [0u32; mt::N];
         state[0] = seed;
-        for i in 1..N {
+        for i in 1..mt::N {
             state[i] = Self::lowest_bits(
-                Self::F * (state[i - 1] ^ (state[i - 1] >> (Self::W - 2))) as u64 + i as u64,
+                mt::F * (state[i - 1] ^ (state[i - 1] >> (mt::W - 2))) as u64 + i as u64,
             );
         }
-        Self { state, index: N }
+        let mut obj = Self { state, index: mt::N };
+        obj.twist();
+        obj
+    }
+
+    fn new_from_state(state: &[u32; mt::N]) -> MersenneTwisterRng {
+        Self { state: state.clone(), index: 0 }
     }
 
     fn generate(&mut self) -> u32 {
-        assert!(self.index <= N, "Generator was never seeded");
-        if self.index == N {
+        assert!(self.index <= mt::N, "Generator was never seeded");
+        if self.index == mt::N {
             self.twist()
         }
         let mut y = self.state[self.index];
-        y ^= (y >> Self::U) & Self::D;
-        y ^= (y << Self::S) & Self::B;
-        y ^= (y << Self::T) & Self::C;
-        y ^= y >> Self::L;
+        y ^= (y >> mt::U) & mt::D;
+        y ^= (y << mt::S) & mt::B;
+        y ^= (y << mt::T) & mt::C;
+        y ^= y >> mt::L;
         self.index += 1;
         y
     }
 
     fn twist(&mut self) {
-        let lower_mask = (1 << Self::R) - 1;
-        let upper_mask = 1 << Self::R;
-        for i in 0..N {
-            let x = (self.state[i] & upper_mask) | (self.state[(i + 1) % N] & lower_mask);
+        let lower_mask = (1 << mt::R) - 1;
+        let upper_mask = 1 << mt::R;
+        for i in 0..mt::N {
+            let x = (self.state[i] & upper_mask) | (self.state[(i + 1) % mt::N] & lower_mask);
             let mut x_a = x >> 1;
             if x & 1 == 1 {
-                x_a = x_a ^ Self::A;
+                x_a = x_a ^ mt::A;
             }
-            self.state[i] = self.state[(i + Self::M) % N] ^ x_a;
+            self.state[i] = self.state[(i + mt::M) % mt::N] ^ x_a;
         }
         self.index = 0;
     }
