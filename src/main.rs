@@ -5,15 +5,136 @@ use hex;
 use rand::{thread_rng, Rng, RngCore};
 use std::collections::HashMap;
 use std::error::Error;
-use std::{fmt, thread};
 use std::fs;
 use std::io::prelude::*;
 use std::str::FromStr;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fmt, thread};
 use thiserror;
-use std::time::{UNIX_EPOCH, SystemTime, Duration};
 
 fn main() {
     println!("Hello, world!");
+    println!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+    println!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u16);
+}
+
+// Challenge 24
+
+fn generate_password_token(seed: u16) -> u32 {
+    let mut rng = MersenneTwisterRng::new(seed as u32);
+    let mut token = 0;
+    for _ in 0..thread_rng().gen_range(1..1000) {
+        token = rng.generate();
+    }
+    token
+}
+
+fn crack_password_token(token: u32) -> Option<u16> {
+    for seed in 0..0xFFFF {
+        let mut rng = MersenneTwisterRng::new(seed as u32);
+        for _ in 0..1000 {
+            if token == rng.generate() {
+                return Some(seed);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn test_password_token() {
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u16
+        - thread_rng().gen_range(1..10000);
+    let token = generate_password_token(seed);
+    assert_eq!(crack_password_token(token).unwrap(), seed);
+}
+
+// Form prefix
+fn prng_encrypt_with_prefix(plaintext: &[u8], seed: u16) -> Vec<u8> {
+    let prefix: Vec<u8> = vec![0; thread_rng().gen_range(0..256)]
+        .iter()
+        .map(|_| thread_rng().gen())
+        .collect();
+    let prefixed_plaintext = [prefix.as_slice(), plaintext].concat();
+    mt19937_encrypt(prefixed_plaintext.as_slice(), seed)
+}
+
+fn crack_prefixed(ciphertext: &[u8], plaintext: &[u8]) -> Option<u16> {
+    let target_bytes = fixed_xor(
+        plaintext,
+        &ciphertext[(ciphertext.len() - plaintext.len())..],
+    );
+    let bytes_per_rand = 4;
+    for seed in 0u16..0xFFFF {
+        // gen ciphertext worth of seeds and compare
+        let mut rng = MersenneTwisterRng::new(seed as u32);
+        let mut keystream = vec![];
+        for chunk in ciphertext.chunks(bytes_per_rand) {
+            keystream.extend_from_slice(&rng.generate().to_le_bytes()[..chunk.len()]);
+        }
+        if &keystream[(ciphertext.len() - plaintext.len())..] == target_bytes.as_slice() {
+            return Some(seed);
+        }
+    }
+    None
+}
+
+#[test]
+fn test_prefixed_prng() {
+    let plaintext = [b'A'; 14];
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u16
+        - thread_rng().gen_range(40..1000);
+    let ciphertext = prng_encrypt_with_prefix(&plaintext, seed);
+    let cracked_seed = crack_prefixed(&ciphertext, &plaintext).unwrap();
+    assert_eq!(cracked_seed, seed);
+}
+
+// Create PRNG cipher
+fn mt19937_encrypt(plaintext: &[u8], seed: u16) -> Vec<u8> {
+    let mut rng = MersenneTwisterRng::new(seed as u32);
+    let mut ciphertext = vec![];
+    let bytes_in_rng = 4;
+    for (i, chunk) in plaintext.chunks(bytes_in_rng).enumerate() {
+        let keystream = rng.generate().to_le_bytes();
+        let ciphertext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
+        ciphertext.extend_from_slice(&ciphertext_chunk);
+    }
+    ciphertext
+}
+
+fn mt19937_decrypt(ciphertext: &[u8], seed: u16) -> Vec<u8> {
+    let mut rng = MersenneTwisterRng::new(seed as u32);
+    let mut plaintext = vec![];
+    let bytes_in_rng = 4;
+    for (i, chunk) in ciphertext.chunks(bytes_in_rng).enumerate() {
+        let keystream = rng.generate().to_le_bytes();
+        let plaintext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
+        plaintext.extend_from_slice(&plaintext_chunk);
+    }
+    plaintext
+}
+
+#[test]
+fn test_mt19937_cipher() {
+    for _ in 0..20 {
+        let plaintext: Vec<u8> = vec![0u8; thread_rng().gen_range(12..=256)]
+            .iter()
+            .map(|_| thread_rng().gen())
+            .collect();
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u16
+            - thread_rng().gen_range(40..1000);
+        let ciphertext = mt19937_encrypt(&plaintext, seed);
+        assert_eq!(mt19937_decrypt(&ciphertext, seed), plaintext);
+    }
 }
 
 // Challenge 23
@@ -37,7 +158,6 @@ fn test_clone_mt19937() {
     let rng_clone = clone_mt19937(&mut rng_mut);
     assert_eq!(rng_clone, rng_init);
 }
-
 
 fn invert_right(output: u32, shift: u32, magic: u32) -> u32 {
     assert_ne!(shift, 0);
@@ -119,7 +239,11 @@ fn crack_mt19937_time_seed(num: u32) -> Option<u32> {
     let max_generated = 1000;
     for secs_passed in 0..=max_secs_passed {
         // time if generated secs_passed ago
-        let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32 - secs_passed;
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
+            - secs_passed;
         let mut rng = MersenneTwisterRng::new(seed);
         for _ in 0..max_generated {
             if rng.generate() == num {
@@ -144,7 +268,10 @@ fn wait_random() {
 fn test_crack_mt19937_time_seed_wait() {
     wait_random();
 
-    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
 
     let mut rng = MersenneTwisterRng::new(seed);
 
@@ -158,8 +285,10 @@ fn test_crack_mt19937_time_seed_wait() {
 
 #[test]
 fn test_crack_mt19937_time_seed() {
-
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
     let seed = current_time - gen_wait_time();
 
     let mut rng = MersenneTwisterRng::new(seed);
@@ -210,13 +339,19 @@ impl MersenneTwisterRng {
                 mt::F * (state[i - 1] ^ (state[i - 1] >> (mt::W - 2))) as u64 + i as u64,
             );
         }
-        let mut obj = Self { state, index: mt::N };
+        let mut obj = Self {
+            state,
+            index: mt::N,
+        };
         obj.twist();
         obj
     }
 
     fn new_from_state(state: &[u32; mt::N]) -> MersenneTwisterRng {
-        Self { state: state.clone(), index: 0 }
+        Self {
+            state: state.clone(),
+            index: 0,
+        }
     }
 
     fn generate(&mut self) -> u32 {
