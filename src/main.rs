@@ -14,8 +14,6 @@ use thiserror;
 
 fn main() {
     println!("Hello, world!");
-    println!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-    println!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u16);
 }
 
 // Challenge 24
@@ -100,7 +98,7 @@ fn mt19937_encrypt(plaintext: &[u8], seed: u16) -> Vec<u8> {
     let mut rng = MersenneTwisterRng::new(seed as u32);
     let mut ciphertext = vec![];
     let bytes_in_rng = 4;
-    for (i, chunk) in plaintext.chunks(bytes_in_rng).enumerate() {
+    for (_, chunk) in plaintext.chunks(bytes_in_rng).enumerate() {
         let keystream = rng.generate().to_le_bytes();
         let ciphertext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
         ciphertext.extend_from_slice(&ciphertext_chunk);
@@ -112,7 +110,7 @@ fn mt19937_decrypt(ciphertext: &[u8], seed: u16) -> Vec<u8> {
     let mut rng = MersenneTwisterRng::new(seed as u32);
     let mut plaintext = vec![];
     let bytes_in_rng = 4;
-    for (i, chunk) in ciphertext.chunks(bytes_in_rng).enumerate() {
+    for (_, chunk) in ciphertext.chunks(bytes_in_rng).enumerate() {
         let keystream = rng.generate().to_le_bytes();
         let plaintext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
         plaintext.extend_from_slice(&plaintext_chunk);
@@ -165,7 +163,7 @@ fn invert_right(output: u32, shift: u32, magic: u32) -> u32 {
     let mut input = output & mask;
     for _ in 0..((32 + shift - 1) / shift) {
         let in_bytes = output ^ ((input >> shift) & magic);
-        mask = mask >> shift;
+        mask >>= shift;
         input |= in_bytes & mask;
     }
     input
@@ -188,7 +186,7 @@ fn invert_left(output: u32, shift: u32, magic: u32) -> u32 {
     let mut input = output & mask;
     for _ in 0..((32 + shift - 1) / shift) {
         let in_bytes = output ^ ((input << shift) & magic);
-        mask = mask << shift;
+        mask <<= shift;
         input |= in_bytes & mask;
     }
     input
@@ -349,7 +347,7 @@ impl MersenneTwisterRng {
 
     fn new_from_state(state: &[u32; mt::N]) -> MersenneTwisterRng {
         Self {
-            state: state.clone(),
+            state: *state,
             index: 0,
         }
     }
@@ -375,7 +373,7 @@ impl MersenneTwisterRng {
             let x = (self.state[i] & upper_mask) | (self.state[(i + 1) % mt::N] & lower_mask);
             let mut x_a = x >> 1;
             if x & 1 == 1 {
-                x_a = x_a ^ mt::A;
+                x_a ^= mt::A;
             }
             self.state[i] = self.state[(i + mt::M) % mt::N] ^ x_a;
         }
@@ -513,7 +511,7 @@ fn cbc_padding_oracle_attack(ciphertext: &[u8], iv: &[u8], oracle: &CbcPaddingOr
             ciphertext
                 .iter()
                 .take((block_idx - 1) * 16)
-                .map(|&byte| byte)
+                .copied()
                 .collect()
         };
 
@@ -522,8 +520,8 @@ fn cbc_padding_oracle_attack(ciphertext: &[u8], iv: &[u8], oracle: &CbcPaddingOr
             let pad_byte = (block_size - byte_idx) as u8;
 
             let mut working_prev_block = prev_block.clone();
-            for i in (byte_idx + 1)..block.len() {
-                working_prev_block[i] ^= pad_byte;
+            for byte in working_prev_block.iter_mut().take(block.len()).skip(byte_idx + 1) {
+                *byte ^= pad_byte;
             }
             for byte in 0..=255 {
                 if block_idx == ciphertext.chunks(block_size).len() - 1
@@ -650,9 +648,7 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
         .iter()
         .enumerate()
         .take_while(|&(i, &byte)| byte == ciphertext2[i])
-        .map(|(_, &byte)| byte)
-        .collect::<Vec<u8>>()
-        .len();
+        .count();
 
     let prefix_padding_length = if prefix_length % block_size != 0 {
         block_size - (prefix_length % block_size)
@@ -677,7 +673,7 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
     // form final ciphertext blocks
 
     let mut working_input = initial_ciphertext[..(prefix_length + 2 * block_size)].to_vec();
-    let mut breaking_ciphertext = initial_ciphertext.clone();
+    let mut breaking_ciphertext = initial_ciphertext;
     let target = b";admin=true";
     for i in 0..target.len() {
         let target_byte = target[target.len() - 1 - i];
@@ -687,8 +683,8 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
         let ciphertext_idx = start_of_admin_block_idx - 1 - i;
 
         let mut input = working_input.clone();
-        for j in (ciphertext_idx + 1)..start_of_admin_block_idx {
-            input[j] ^= pad_byte;
+        for byte in input.iter_mut().take(start_of_admin_block_idx).skip(ciphertext_idx + 1) {
+            *byte ^= pad_byte;
         }
 
         for byte in 0..=255 {
@@ -739,9 +735,9 @@ impl<'a> CbcBitFlippingOracle<'a> {
         let plaintext = pkcs7_unpad(&padded_plaintext)?;
 
         // split on ";"
-        for piece in plaintext.split(|&x| x == ';' as u8) {
+        for piece in plaintext.split(|&x| x == b';') {
             // convert each to 2-tuples
-            let p: Vec<&[u8]> = piece.split(|&x| x == '=' as u8).collect();
+            let p: Vec<&[u8]> = piece.split(|&x| x == b'=').collect();
             if p.len() != 2 {
                 continue;
             }
@@ -869,7 +865,7 @@ fn byte_at_a_time_ecb_decrypt_harder(oracle: &EcbOracleHarder) -> Vec<u8> {
         let target_block = ciphertext
             .iter()
             .skip(prefix_block_length)
-            .map(|&byte| byte)
+            .copied()
             .collect::<Vec<u8>>();
         let target_block = target_block
             .chunks(block_size)
@@ -886,7 +882,7 @@ fn byte_at_a_time_ecb_decrypt_harder(oracle: &EcbOracleHarder) -> Vec<u8> {
                     .iter()
                     .skip(idx - (block_size - 1))
                     .take(block_size - 1)
-                    .map(|&byte| byte)
+                    .copied()
                     .collect()
             },
         ]
@@ -901,8 +897,7 @@ fn byte_at_a_time_ecb_decrypt_harder(oracle: &EcbOracleHarder) -> Vec<u8> {
                 .iter()
                 .skip(prefix_block_length)
                 .take(block_size)
-                .map(|&byte| byte)
-                .collect();
+                .copied().collect();
             if block.as_slice() == target_block {
                 plaintext_byte = byte;
                 break;
