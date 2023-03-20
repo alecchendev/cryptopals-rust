@@ -1,5 +1,3 @@
-use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
-use aes::Aes128;
 use base64::{engine::general_purpose, Engine};
 use hex;
 use rand::{thread_rng, Rng, RngCore};
@@ -13,73 +11,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
 use thiserror;
 
+mod aes;
+mod oracle;
+
+use crate::aes::{
+    aes_cbc_decrypt, aes_cbc_encrypt, aes_ctr_decrypt, aes_ctr_encrypt, aes_ecb_decrypt,
+    aes_ecb_encrypt,
+};
+use crate::oracle::{
+    AesCbcOracle, AesCtrOracle, BitFlippingOracle, CbcBitFlippingOracle, CbcPaddingOracle,
+    CtrBitFlippingOracle, CtrEditOracle, EcbOracleHarder,
+};
+
 fn main() {
     println!("Hello, world!");
 }
 
 // Challenge 26
-
-type CtrBitFlippingOracle<'a> = BitFlippingOracle<'a, AesCtrOracle>;
-
-struct BitFlippingOracle<'a, T: CipherOracle> {
-    cipher: &'a T,
-    prefix: &'a [u8],
-    suffix: &'a [u8],
-}
-
-impl<T: CipherOracle> BitFlippingOracle<'_, T> {
-    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        assert!(!plaintext.contains(&b';') && !plaintext.contains(&b'='));
-        let padded_plaintext = pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), 16);
-        self.cipher.encrypt(&padded_plaintext)
-    }
-
-    fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, Box<dyn Error>> {
-        let padded_plaintext = self.cipher.decrypt(ciphertext);
-        let plaintext = pkcs7_unpad(&padded_plaintext)?;
-
-        for piece in plaintext.split(|&x| x == b';') {
-            let p: Vec<&[u8]> = piece.split(|&x| x == b'=').collect();
-            if p.len() != 2 {
-                continue;
-            }
-            let (key, value) = (p[0], p[1]);
-            if key == b"admin" && value == b"true" {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-}
-
-trait CipherOracle {
-    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8>;
-    fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8>;
-}
-
-struct AesCtrOracle {
-    key: [u8; BLOCK_SIZE],
-    nonce: u64
-}
-
-impl AesCtrOracle {
-    fn new() -> Self {
-        Self {
-            key: generate_key(),
-            nonce: thread_rng().gen(),
-        }
-    }
-}
-
-impl CipherOracle for AesCtrOracle {
-    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        aes_ctr_encrypt(plaintext, &self.key, self.nonce)
-    }
-
-    fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        aes_ctr_decrypt(ciphertext, &self.key, self.nonce)
-    }
-}
 
 // Challenge 25
 
@@ -88,51 +36,7 @@ fn break_random_access_read_write_aes_ctr(ciphertext: &[u8], oracle: &CtrEditOra
     fixed_xor(ciphertext, &keystream)
 }
 
-struct CtrEditOracle<'a> {
-    key: &'a [u8; BLOCK_SIZE],
-    nonce: u64,
-}
-
-impl<'a> CtrEditOracle<'a> {
-    fn edit(&self, ciphertext: &[u8], offset: usize, new_text: &[u8]) -> Vec<u8> {
-        edit(ciphertext, self.key, offset, self.nonce, new_text)
-    }
-}
-
 const BLOCK_SIZE: usize = 16;
-
-fn create_keystream(key: &[u8; BLOCK_SIZE], nonce: u64, range: Range<usize>) -> Vec<u8> {
-    let start = range.start / BLOCK_SIZE;
-    let end = (range.end + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    let keystream = (start..end)
-        .into_iter()
-        .map(|counter| {
-            let nonce_counter = [nonce.to_le_bytes(), (counter as u64).to_le_bytes()].concat();
-            aes_ecb_encrypt(&nonce_counter, key)
-        })
-        .flatten()
-        .collect::<Vec<u8>>();
-
-    let offset = start * BLOCK_SIZE;
-    keystream[(range.start - offset)..(range.end - offset)].to_vec()
-}
-
-fn edit(ciphertext: &[u8], key: &[u8; 16], offset: usize, nonce: u64, new_text: &[u8]) -> Vec<u8> {
-    let start = offset;
-    let end = offset + new_text.len();
-    let keystream = create_keystream(key, nonce, start..end);
-    let mut new_ciphertext = ciphertext.to_vec();
-    for ((byte, keystream_byte), new_byte) in new_ciphertext
-        .iter_mut()
-        .skip(offset)
-        .take(new_text.len())
-        .zip(keystream.iter())
-        .zip(new_text.iter())
-    {
-        *byte = new_byte ^ keystream_byte;
-    }
-    new_ciphertext
-}
 
 #[test]
 fn test_break_random_access_aes_ctr() {
@@ -148,7 +52,7 @@ fn test_break_random_access_aes_ctr() {
     let nonce = thread_rng().gen::<u64>();
     let key = generate_key();
     let ciphertext = aes_ctr_encrypt(&plaintext, &key, nonce);
-    let oracle = CtrEditOracle { key: &key, nonce };
+    let oracle = CtrEditOracle::new(&key, nonce);
 
     let output = break_random_access_read_write_aes_ctr(&ciphertext, &oracle);
     assert_eq!(output, plaintext);
@@ -587,30 +491,6 @@ fn test_fixed_nonce_ctr_attack() {
 
 // Challenge 18
 
-fn aes_ctr_encrypt(plaintext: &[u8], key: &[u8; 16], nonce: u64) -> Vec<u8> {
-    let block_size = 16;
-    let mut ciphertext = vec![];
-    for (i, chunk) in plaintext.chunks(block_size).enumerate() {
-        let nonce_counter = [nonce.to_le_bytes(), (i as u64).to_le_bytes()].concat();
-        let keystream = aes_ecb_encrypt(&nonce_counter, key);
-        let ciphertext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
-        ciphertext.extend_from_slice(&ciphertext_chunk);
-    }
-    ciphertext
-}
-
-fn aes_ctr_decrypt(ciphertext: &[u8], key: &[u8; 16], nonce: u64) -> Vec<u8> {
-    let block_size = 16;
-    let mut plaintext = vec![];
-    for (i, chunk) in ciphertext.chunks(block_size).enumerate() {
-        let nonce_counter = [nonce.to_le_bytes(), (i as u64).to_le_bytes()].concat();
-        let keystream = aes_ecb_encrypt(&nonce_counter, key);
-        let plaintext_chunk = fixed_xor(chunk, &keystream[..chunk.len()]);
-        plaintext.extend_from_slice(&plaintext_chunk);
-    }
-    plaintext
-}
-
 #[test]
 fn test_aes_ctr_mode() {
     let b64_ciphertext =
@@ -689,32 +569,6 @@ fn cbc_padding_oracle_attack(ciphertext: &[u8], iv: &[u8], oracle: &CbcPaddingOr
     plaintext
 }
 
-struct CbcPaddingOracle<'a> {
-    key: &'a [u8; 16],
-    iv: &'a [u8; 16],
-    plaintexts: Vec<Vec<u8>>,
-}
-
-impl<'a> CbcPaddingOracle<'a> {
-    fn encrypt(&self) -> (Vec<u8>, [u8; 16], usize) {
-        // pick random
-        let idx = thread_rng().gen_range(0..self.plaintexts.len());
-        let plaintext = &self.plaintexts[idx];
-        // pad
-        let padded_plaintext = pkcs7_pad(plaintext, 16);
-        // aes cbc encrypt
-        let ciphertext = aes_cbc_encrypt(&padded_plaintext, self.key, self.iv);
-        // return ciphertext and iv
-        (ciphertext, self.iv.to_owned(), idx)
-    }
-
-    fn check_valid_padding(&self, ciphertext: &[u8]) -> bool {
-        let padded_plaintext = aes_cbc_decrypt(ciphertext, self.key, self.iv);
-        println!("{:?}", padded_plaintext.chunks(16).last().unwrap());
-        pkcs7_unpad(&padded_plaintext).is_ok()
-    }
-}
-
 #[test]
 fn test_cbc_padding_oracle_attack() {
     let plaintexts = vec![
@@ -735,11 +589,7 @@ fn test_cbc_padding_oracle_attack() {
         .collect();
     let key = &generate_key();
     let iv = &generate_key();
-    let oracle = CbcPaddingOracle {
-        key,
-        iv,
-        plaintexts: plaintexts.clone(),
-    };
+    let oracle = CbcPaddingOracle::new(key, iv, plaintexts.clone());
     let (ciphertext, iv, idx) = oracle.encrypt();
 
     let output = cbc_padding_oracle_attack(&ciphertext, &iv, &oracle);
@@ -858,42 +708,15 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
     breaking_ciphertext
 }
 
-// type CbcBitFlippingOracle = BitFlippingOracle<AesCtrOracle>;
-
-struct AesCbcOracle {
-    key: [u8; BLOCK_SIZE],
-    iv: [u8; BLOCK_SIZE],
-}
-
-impl AesCbcOracle {
-    fn new() -> Self {
-        Self {
-            key: generate_key(),
-            iv: generate_key(),
-        }
-    }
-}
-
-impl CipherOracle for AesCbcOracle {
-    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        aes_cbc_encrypt(plaintext, &self.key, &self.iv)
-    }
-
-    fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        aes_cbc_decrypt(ciphertext, &self.key, &self.iv)
-    }
-}
-
-type CbcBitFlippingOracle<'a> = BitFlippingOracle<'a, AesCbcOracle>;
-
 #[test]
 fn test_cbc_bit_flipping() {
     for _ in 0..15 {
-        let oracle = BitFlippingOracle {
-            cipher: &AesCbcOracle::new(),
-            prefix: b"comment1=cooking%20MCs;userdata=",
-            suffix: b";comment2=%20like%20a%20pound%20of%20bacon",
-        };
+        let aes_cbc_oracle = AesCbcOracle::new();
+        let oracle = BitFlippingOracle::new(
+            &aes_cbc_oracle,
+            b"comment1=cooking%20MCs;userdata=",
+            b";comment2=%20like%20a%20pound%20of%20bacon",
+        );
         let breaking_ciphertext = cbc_bit_flipping_attack(&oracle);
         let result = oracle.check_admin(&breaking_ciphertext);
         assert!(if let Ok(is_admin) = result {
@@ -912,7 +735,7 @@ enum MyError {
     InvalidPkcs7Padding,
 }
 
-fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
+pub(crate) fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
     assert!(!input.is_empty());
     let last_byte = *input.last().unwrap();
     if last_byte == 0 || last_byte > 16 {
@@ -1043,20 +866,6 @@ fn byte_at_a_time_ecb_decrypt_harder(oracle: &EcbOracleHarder) -> Vec<u8> {
     plaintext
 }
 
-struct EcbOracleHarder<'a> {
-    key: &'a [u8],
-    target: &'a [u8],
-    prefix: &'a [u8],
-}
-
-impl<'a> EcbOracleHarder<'a> {
-    fn encrypt(&self, input: &[u8]) -> Vec<u8> {
-        let plaintext: &[u8] = &[self.prefix, input, self.target].concat();
-        let plaintext_padded = pkcs7_pad(plaintext, 16);
-        aes_ecb_encrypt(&plaintext_padded, self.key)
-    }
-}
-
 #[test]
 fn test_byte_at_a_time_ecb_decryption_harder() {
     let key = generate_key();
@@ -1072,11 +881,7 @@ fn test_byte_at_a_time_ecb_decryption_harder() {
     for byte in &mut prefix {
         *byte = rng.gen();
     }
-    let oracle = EcbOracleHarder {
-        key: &key,
-        target: &unknown_string,
-        prefix: &prefix[..count],
-    };
+    let oracle = EcbOracleHarder::new(&key, &unknown_string, &prefix[..count]);
 
     let output = byte_at_a_time_ecb_decrypt_harder(&oracle);
     println!("{}", String::from_utf8(output.clone()).unwrap());
@@ -1250,9 +1055,6 @@ fn test_parse_key_value() {
     let output = parse_key_value(input);
     assert_eq!(output, expected_output);
 }
-
-#[test]
-fn test_ecb_cut_and_paste() {}
 
 // Challenge 12
 
@@ -1434,21 +1236,6 @@ fn test_detect_mode() {
     }
 }
 
-fn aes_cbc_encrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    assert!(input.len() % 16 == 0);
-    let mut ciphertext = vec![];
-    for (i, chunk) in input.chunks(16).enumerate() {
-        let xor: &[u8] = match i {
-            0 => iv,
-            _ => ciphertext.get(((i - 1) * 16)..(i * 16)).unwrap(), // array_ref!(ciphertext.as_slice(), (i - 1) * 16, i * 16),
-        };
-        let plaintext_xored = fixed_xor(chunk, xor);
-        let plaintext_xored_encrypted = aes_ecb_encrypt(&plaintext_xored, key);
-        ciphertext.extend(plaintext_xored_encrypted);
-    }
-    ciphertext
-}
-
 #[test]
 fn test_aes_cbc_encrypt() {
     let mut rng = thread_rng();
@@ -1461,19 +1248,6 @@ fn test_aes_cbc_encrypt() {
     let ciphertext = aes_cbc_encrypt(&plaintext, &key, &iv);
     let decrypted_ciphertext = aes_cbc_decrypt(&ciphertext, &key.to_vec(), &iv);
     assert_eq!(plaintext, decrypted_ciphertext);
-}
-
-fn aes_ecb_encrypt(input: &[u8], key: &[u8]) -> Vec<u8> {
-    assert!(input.len() % 16 == 0);
-    let key = GenericArray::from_slice(key);
-    let cipher = Aes128::new(key);
-    let mut ciphertext = vec![];
-    for chunk in input.chunks(16) {
-        let mut block = *GenericArray::from_slice(chunk);
-        cipher.encrypt_block(&mut block);
-        ciphertext.extend_from_slice(&block);
-    }
-    ciphertext
 }
 
 #[test]
@@ -1489,22 +1263,6 @@ fn test_aes_ecb_encrypt() {
 }
 
 // Challenge 10
-
-fn aes_cbc_decrypt(input: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let mut plaintext = vec![];
-    let block_len = 16;
-    for (i, chunk) in input.chunks(block_len).enumerate() {
-        let decrypted = aes_ecb_decrypt(chunk, key);
-        let xor = if i == 0 {
-            iv
-        } else {
-            &input[((i - 1) * block_len)..(i * block_len)]
-        };
-        let decrypted_xor = fixed_xor(decrypted.as_slice(), xor);
-        plaintext.extend_from_slice(&decrypted_xor);
-    }
-    plaintext
-}
 
 #[test]
 fn test_aes_cbc_decrypt() {
@@ -1528,7 +1286,7 @@ fn test_aes_cbc_decrypt() {
 
 // Challenge 9
 
-fn pkcs7_pad(input: &[u8], block_size: usize) -> Vec<u8> {
+pub fn pkcs7_pad(input: &[u8], block_size: usize) -> Vec<u8> {
     let padding_length = block_size - (input.len() % block_size);
     [input, &vec![padding_length as u8; padding_length]].concat()
 }
@@ -1594,19 +1352,6 @@ fn pkcs7_unpad_unchecked(input: &[u8]) -> Vec<u8> {
     } else {
         input.to_vec()
     }
-}
-
-fn aes_ecb_decrypt(input: &[u8], key: &[u8]) -> Vec<u8> {
-    let key = GenericArray::from_slice(key);
-    let cipher = Aes128::new(key);
-    let mut plaintext = vec![];
-    let block_len = 16;
-    for chunk in input.chunks(block_len) {
-        let mut block = *GenericArray::from_slice(chunk);
-        cipher.decrypt_block(&mut block);
-        plaintext.extend_from_slice(&block);
-    }
-    plaintext
 }
 
 #[test]
