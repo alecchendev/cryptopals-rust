@@ -17,6 +17,70 @@ fn main() {
     println!("Hello, world!");
 }
 
+// Challenge 26
+
+type CtrBitFlippingOracle<'a> = BitFlippingOracle<'a, AesCtrOracle>;
+
+struct BitFlippingOracle<'a, T: CipherOracle> {
+    cipher: &'a T,
+    prefix: &'a [u8],
+    suffix: &'a [u8],
+}
+
+impl<T: CipherOracle> BitFlippingOracle<'_, T> {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        assert!(!plaintext.contains(&b';') && !plaintext.contains(&b'='));
+        let padded_plaintext = pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), 16);
+        self.cipher.encrypt(&padded_plaintext)
+    }
+
+    fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, Box<dyn Error>> {
+        let padded_plaintext = self.cipher.decrypt(ciphertext);
+        let plaintext = pkcs7_unpad(&padded_plaintext)?;
+
+        for piece in plaintext.split(|&x| x == b';') {
+            let p: Vec<&[u8]> = piece.split(|&x| x == b'=').collect();
+            if p.len() != 2 {
+                continue;
+            }
+            let (key, value) = (p[0], p[1]);
+            if key == b"admin" && value == b"true" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+trait CipherOracle {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8>;
+    fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8>;
+}
+
+struct AesCtrOracle {
+    key: [u8; BLOCK_SIZE],
+    nonce: u64
+}
+
+impl AesCtrOracle {
+    fn new() -> Self {
+        Self {
+            key: generate_key(),
+            nonce: thread_rng().gen(),
+        }
+    }
+}
+
+impl CipherOracle for AesCtrOracle {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        aes_ctr_encrypt(plaintext, &self.key, self.nonce)
+    }
+
+    fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        aes_ctr_decrypt(ciphertext, &self.key, self.nonce)
+    }
+}
+
 // Challenge 25
 
 fn break_random_access_read_write_aes_ctr(ciphertext: &[u8], oracle: &CtrEditOracle) -> Vec<u8> {
@@ -794,55 +858,42 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
     breaking_ciphertext
 }
 
-struct CbcBitFlippingOracle<'a> {
-    key: &'a [u8; 16],
-    iv: &'a [u8; 16],
-    prefix: &'a [u8],
-    suffix: &'a [u8],
+// type CbcBitFlippingOracle = BitFlippingOracle<AesCtrOracle>;
+
+struct AesCbcOracle {
+    key: [u8; BLOCK_SIZE],
+    iv: [u8; BLOCK_SIZE],
 }
 
-impl<'a> CbcBitFlippingOracle<'a> {
-    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        // reject if plaintext includes ";" and "="
-        assert!(!plaintext.contains(&b';') && !plaintext.contains(&b'='));
-        // prepend, append, pad
-        let input = pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), 16);
-        // encrypt
-        aes_cbc_encrypt(&input, self.key, self.iv)
-    }
-
-    fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, Box<dyn Error>> {
-        // decrypt
-        let padded_plaintext = aes_cbc_decrypt(ciphertext, self.key, self.iv);
-        let plaintext = pkcs7_unpad(&padded_plaintext)?;
-
-        // split on ";"
-        for piece in plaintext.split(|&x| x == b';') {
-            // convert each to 2-tuples
-            let p: Vec<&[u8]> = piece.split(|&x| x == b'=').collect();
-            if p.len() != 2 {
-                continue;
-            }
-            let (key, value) = (p[0], p[1]);
-            // check for admin tuple
-            if key == b"admin" && value == b"true" {
-                return Ok(true);
-            }
+impl AesCbcOracle {
+    fn new() -> Self {
+        Self {
+            key: generate_key(),
+            iv: generate_key(),
         }
-        Ok(false)
     }
 }
+
+impl CipherOracle for AesCbcOracle {
+    fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        aes_cbc_encrypt(plaintext, &self.key, &self.iv)
+    }
+
+    fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
+        aes_cbc_decrypt(ciphertext, &self.key, &self.iv)
+    }
+}
+
+type CbcBitFlippingOracle<'a> = BitFlippingOracle<'a, AesCbcOracle>;
 
 #[test]
 fn test_cbc_bit_flipping() {
     for _ in 0..15 {
-        let oracle = CbcBitFlippingOracle {
-            key: &generate_key(),
-            iv: &generate_key(),
-            prefix: "comment1=cooking%20MCs;userdata=".as_bytes(),
-            suffix: ";comment2=%20like%20a%20pound%20of%20bacon".as_bytes(),
+        let oracle = BitFlippingOracle {
+            cipher: &AesCbcOracle::new(),
+            prefix: b"comment1=cooking%20MCs;userdata=",
+            suffix: b";comment2=%20like%20a%20pound%20of%20bacon",
         };
-
         let breaking_ciphertext = cbc_bit_flipping_attack(&oracle);
         let result = oracle.check_admin(&breaking_ciphertext);
         assert!(if let Ok(is_admin) = result {
