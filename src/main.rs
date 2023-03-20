@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io::prelude::*;
+use std::ops::Range;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
@@ -14,6 +15,79 @@ use thiserror;
 
 fn main() {
     println!("Hello, world!");
+}
+
+// Challenge 25
+
+fn break_random_access_read_write_aes_ctr(ciphertext: &[u8], oracle: &CtrEditOracle) -> Vec<u8> {
+    let keystream = oracle.edit(ciphertext, 0, &vec![0; ciphertext.len()]);
+    fixed_xor(ciphertext, &keystream)
+}
+
+struct CtrEditOracle<'a> {
+    key: &'a [u8; BLOCK_SIZE],
+    nonce: u64,
+}
+
+impl<'a> CtrEditOracle<'a> {
+    fn edit(&self, ciphertext: &[u8], offset: usize, new_text: &[u8]) -> Vec<u8> {
+        edit(ciphertext, self.key, offset, self.nonce, new_text)
+    }
+}
+
+const BLOCK_SIZE: usize = 16;
+
+fn create_keystream(key: &[u8; BLOCK_SIZE], nonce: u64, range: Range<usize>) -> Vec<u8> {
+    let start = range.start / BLOCK_SIZE;
+    let end = (range.end + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let keystream = (start..end)
+        .into_iter()
+        .map(|counter| {
+            let nonce_counter = [nonce.to_le_bytes(), (counter as u64).to_le_bytes()].concat();
+            aes_ecb_encrypt(&nonce_counter, key)
+        })
+        .flatten()
+        .collect::<Vec<u8>>();
+
+    let offset = start * BLOCK_SIZE;
+    keystream[(range.start - offset)..(range.end - offset)].to_vec()
+}
+
+fn edit(ciphertext: &[u8], key: &[u8; 16], offset: usize, nonce: u64, new_text: &[u8]) -> Vec<u8> {
+    let start = offset;
+    let end = offset + new_text.len();
+    let keystream = create_keystream(key, nonce, start..end);
+    let mut new_ciphertext = ciphertext.to_vec();
+    for ((byte, keystream_byte), new_byte) in new_ciphertext
+        .iter_mut()
+        .skip(offset)
+        .take(new_text.len())
+        .zip(keystream.iter())
+        .zip(new_text.iter())
+    {
+        *byte = new_byte ^ keystream_byte;
+    }
+    new_ciphertext
+}
+
+#[test]
+fn test_break_random_access_aes_ctr() {
+    // read file
+    let mut file = fs::File::open("data/25.txt").unwrap();
+    let mut base64_contents = String::new();
+    file.read_to_string(&mut base64_contents).unwrap();
+    base64_contents = base64_contents.replace("\n", "");
+    let contents = general_purpose::STANDARD.decode(base64_contents).unwrap();
+    let key = b"YELLOW SUBMARINE";
+    let plaintext = pkcs7_unpad(&aes_ecb_decrypt(&contents, key)).unwrap();
+
+    let nonce = thread_rng().gen::<u64>();
+    let key = generate_key();
+    let ciphertext = aes_ctr_encrypt(&plaintext, &key, nonce);
+    let oracle = CtrEditOracle { key: &key, nonce };
+
+    let output = break_random_access_read_write_aes_ctr(&ciphertext, &oracle);
+    assert_eq!(output, plaintext);
 }
 
 // Challenge 24
@@ -520,7 +594,11 @@ fn cbc_padding_oracle_attack(ciphertext: &[u8], iv: &[u8], oracle: &CbcPaddingOr
             let pad_byte = (block_size - byte_idx) as u8;
 
             let mut working_prev_block = prev_block.clone();
-            for byte in working_prev_block.iter_mut().take(block.len()).skip(byte_idx + 1) {
+            for byte in working_prev_block
+                .iter_mut()
+                .take(block.len())
+                .skip(byte_idx + 1)
+            {
                 *byte ^= pad_byte;
             }
             for byte in 0..=255 {
@@ -683,7 +761,11 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
         let ciphertext_idx = start_of_admin_block_idx - 1 - i;
 
         let mut input = working_input.clone();
-        for byte in input.iter_mut().take(start_of_admin_block_idx).skip(ciphertext_idx + 1) {
+        for byte in input
+            .iter_mut()
+            .take(start_of_admin_block_idx)
+            .skip(ciphertext_idx + 1)
+        {
             *byte ^= pad_byte;
         }
 
@@ -897,7 +979,8 @@ fn byte_at_a_time_ecb_decrypt_harder(oracle: &EcbOracleHarder) -> Vec<u8> {
                 .iter()
                 .skip(prefix_block_length)
                 .take(block_size)
-                .copied().collect();
+                .copied()
+                .collect();
             if block.as_slice() == target_block {
                 plaintext_byte = byte;
                 break;
