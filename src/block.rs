@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::{
     basic::{decrypt_single_byte_xor, fixed_xor, transpose_blocks},
     generate_key,
-    oracle::{CbcBitFlippingOracle, CbcPaddingOracle},
+    oracle::{CbcBitFlippingOracle, CbcPaddingOracle, ProfileManager},
     BLOCK_SIZE,
 };
 
@@ -373,121 +373,6 @@ pub(crate) fn forge_admin_ciphertext(oracle: &ProfileManager) -> Vec<u8> {
     let prefix_blocks = &prefix_ciphertext[..(block_size * 2)];
     // add together
     [prefix_blocks, admin_block].concat()
-}
-
-// SHOULD FIND A WAY NOT TO USE THIS HERE?
-fn pkcs7_unpad_unchecked(input: &[u8]) -> Vec<u8> {
-    assert!(!input.is_empty());
-    let last_byte = *input.last().unwrap();
-    if last_byte as usize > input.len() {
-        return input.to_vec();
-    }
-    let is_padded = input[(input.len() - last_byte as usize)..input.len()]
-        .iter()
-        .all(|&b| b == last_byte);
-    if is_padded {
-        input[..(input.len() - last_byte as usize)].to_vec()
-    } else {
-        input.to_vec()
-    }
-}
-
-pub(crate) struct ProfileManager<'a> {
-    key: &'a [u8],
-}
-
-impl<'a> ProfileManager<'a> {
-    pub(crate) fn new(key: &'a [u8]) -> Self {
-        Self { key }
-    }
-
-    pub(crate) fn add_profile(&self, ciphertext: &'a [u8]) -> UserProfile {
-        let plaintext = pkcs7_unpad_unchecked(&aes_ecb_decrypt(ciphertext, self.key));
-        let profile = UserProfile::decode(std::str::from_utf8(&plaintext).unwrap());
-        // (add profile)
-        profile
-    }
-
-    pub(crate) fn profile_for(&self, email: &str) -> String {
-        assert!(!email.contains('=') && !email.contains('&'));
-        UserProfile {
-            email: String::from(email),
-            uid: 10,
-            role: Role::User,
-        }
-        .encode()
-    }
-
-    pub(crate) fn profile_for_encrypted(&self, email: &str) -> Vec<u8> {
-        aes_ecb_encrypt(&pkcs7_pad(self.profile_for(email).as_bytes(), 16), self.key)
-    }
-}
-
-#[derive(PartialEq)]
-pub(crate) enum Role {
-    User,
-    Admin,
-}
-
-#[derive(PartialEq)]
-pub(crate) struct UserProfile {
-    email: String,
-    uid: usize,
-    pub(crate) role: Role,
-}
-
-impl UserProfile {
-    pub(crate) fn new(email: String, uid: usize, role: Role) -> Self {
-        Self { email, uid, role }
-    }
-
-    fn encode(&self) -> String {
-        String::from("email=")
-            + &self.email
-            + "&uid="
-            + &self.uid.to_string()
-            + "&role="
-            + match self.role {
-                Role::User => "user",
-                Role::Admin => "admin",
-            }
-    }
-
-    fn decode(input: &str) -> Self {
-        let key_value_map = parse_key_value(input);
-        assert!(
-            key_value_map.contains_key("email")
-                && key_value_map.contains_key("uid")
-                && key_value_map.contains_key("role")
-        );
-        let email = *key_value_map.get("email").unwrap();
-        assert!(!email.contains('=') && !email.contains('&'));
-        let uid = key_value_map.get("uid").unwrap().parse::<usize>().unwrap();
-        let role = *key_value_map.get("role").unwrap();
-        let role = match role {
-            "user" => Role::User,
-            "admin" => Role::Admin,
-            _ => panic!(),
-        };
-        Self {
-            email: String::from(email),
-            uid,
-            role,
-        }
-    }
-}
-
-pub(crate) fn parse_key_value(input: &str) -> HashMap<&str, &str> {
-    let mut object: HashMap<&str, &str> = HashMap::new();
-    for s in input.split('&') {
-        let key_value: Vec<&str> = s.split('=').collect();
-        assert!(key_value.len() == 2);
-        let key = key_value[0];
-        let value = key_value[1];
-        let prev_value = object.insert(key, value);
-        assert!(prev_value.is_none());
-    }
-    object
 }
 
 // Challenge 12

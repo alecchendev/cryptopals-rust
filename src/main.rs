@@ -14,8 +14,8 @@ use thiserror;
 
 mod basic;
 mod block;
-mod stream;
 mod prng;
+mod stream;
 
 mod oracle;
 
@@ -28,21 +28,20 @@ use block::{
     aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt, aes_ecb_encrypt, byte_at_a_time_ecb_decrypt,
     byte_at_a_time_ecb_decrypt_harder, cbc_bit_flipping_attack, cbc_padding_oracle_attack,
     detect_aes_ecb, detect_mode, encrypt_oracle, fixed_nonce_ctr_attack, forge_admin_ciphertext,
-    parse_key_value, pkcs7_pad, pkcs7_unpad, ConsistentKey, EcbOracleHarder, ProfileManager, Role,
-    UserProfile,
+    pkcs7_pad, pkcs7_unpad, ConsistentKey, EcbOracleHarder,
 };
-use stream::{
-    aes_ctr_decrypt, aes_ctr_encrypt, break_random_access_read_write_aes_ctr,
-    ctr_bit_flipping_attack,
+use oracle::{
+    parse_key_value, AesCbcOracle, AesCtrOracle, BitFlippingOracle, CbcBitFlippingOracle,
+    CbcPaddingOracle, CtrBitFlippingOracle, CtrEditOracle, ProfileManager, Role, UserProfile,
 };
 use prng::{
     clone_mt19937, crack_mt19937_time_seed, crack_password_token, crack_prefixed,
     generate_password_token, invert_left, invert_right, invert_temper, mt19937_decrypt,
     mt19937_encrypt, prng_encrypt_with_prefix,
 };
-use oracle::{
-    AesCbcOracle, AesCtrOracle, BitFlippingOracle, CbcBitFlippingOracle, CbcPaddingOracle,
-    CtrBitFlippingOracle, CtrEditOracle,
+use stream::{
+    aes_ctr_decrypt, aes_ctr_encrypt, break_random_access_read_write_aes_ctr,
+    ctr_bit_flipping_attack,
 };
 
 fn main() {
