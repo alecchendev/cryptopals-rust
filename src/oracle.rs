@@ -3,9 +3,14 @@ use std::{error::Error, ops::Range};
 use rand::{thread_rng, Rng};
 
 use crate::{
-    aes::{aes_cbc_decrypt, aes_cbc_encrypt, aes_ctr_decrypt, aes_ctr_encrypt, aes_ecb_encrypt},
-    generate_key, pkcs7_pad, pkcs7_unpad, BLOCK_SIZE,
+    block::{aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_encrypt},
+    generate_key, pkcs7_pad, pkcs7_unpad,
+    stream::{aes_ctr_decrypt, aes_ctr_encrypt},
+    BLOCK_SIZE,
 };
+
+// Thoughts
+// make a string append/prepend oracle that takes and enum for which action to do
 
 pub(crate) type CtrBitFlippingOracle<'a> = BitFlippingOracle<'a, AesCtrOracle>;
 
@@ -181,27 +186,5 @@ impl<'a> CbcPaddingOracle<'a> {
         let padded_plaintext = aes_cbc_decrypt(ciphertext, self.key, self.iv);
         println!("{:?}", padded_plaintext.chunks(16).last().unwrap());
         pkcs7_unpad(&padded_plaintext).is_ok()
-    }
-}
-
-pub(crate) struct EcbOracleHarder<'a> {
-    key: &'a [u8],
-    target: &'a [u8],
-    prefix: &'a [u8],
-}
-
-impl<'a> EcbOracleHarder<'a> {
-    pub(crate) fn new(key: &'a [u8; 16], target: &'a [u8], prefix: &'a [u8]) -> Self {
-        Self {
-            key,
-            target,
-            prefix,
-        }
-    }
-
-    pub(crate) fn encrypt(&self, input: &[u8]) -> Vec<u8> {
-        let plaintext: &[u8] = &[self.prefix, input, self.target].concat();
-        let plaintext_padded = pkcs7_pad(plaintext, 16);
-        aes_ecb_encrypt(&plaintext_padded, self.key)
     }
 }
