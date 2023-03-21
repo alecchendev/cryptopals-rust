@@ -29,6 +29,45 @@ fn main() {
 
 // Challenge 26
 
+fn ctr_bit_flipping_attack(oracle: &CtrBitFlippingOracle) -> Vec<u8> {
+    let ciphertext1 = oracle.encrypt(b"A");
+    let ciphertext2 = oracle.encrypt(b"B");
+    let prefix_length = ciphertext1
+        .iter()
+        .zip(ciphertext2.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let target = b";admin=true";
+    let zeroes = vec![0u8; target.len()];
+    let mut ciphertext = oracle.encrypt(&zeroes);
+
+    for (byte, target_byte) in ciphertext
+        .iter_mut()
+        .skip(prefix_length)
+        .take(target.len())
+        .zip(target.iter())
+    {
+        *byte ^= target_byte;
+    }
+    ciphertext
+}
+
+#[test]
+fn test_ctr_bit_flipping() {
+    for _ in 0..15 {
+        let aes_ctr_oracle = AesCtrOracle::new();
+        let oracle = BitFlippingOracle::new(
+            &aes_ctr_oracle,
+            b"comment1=cooking%20MCs;userdata=",
+            b";comment2=%20like%20a%20pound%20of%20bacon",
+        );
+        let breaking_ciphertext = ctr_bit_flipping_attack(&oracle);
+        let result = oracle.check_admin(&breaking_ciphertext);
+        assert!(result.unwrap_or(false));
+    }
+}
+
 // Challenge 25
 
 fn break_random_access_read_write_aes_ctr(ciphertext: &[u8], oracle: &CtrEditOracle) -> Vec<u8> {
@@ -598,6 +637,17 @@ fn test_cbc_padding_oracle_attack() {
 
 // Challenge 16
 
+fn create_random_block(bad_chars: &[u8]) -> [u8; BLOCK_SIZE] {
+    let mut block = [0u8; BLOCK_SIZE];
+    thread_rng().fill_bytes(&mut block);
+    for byte in block.iter_mut() {
+        while bad_chars.contains(byte) {
+            *byte = thread_rng().gen();
+        }
+    }
+    block
+}
+
 fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
     // produce two ciphertext blocks
     // one that decrypts to anything
@@ -624,18 +674,11 @@ fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> {
     // isolate two blocks (have filler up until these (userdata=asdfasdfasdf|block|block|suffix))
     // get base ciphertext block
 
-    let mut input1 = vec![0u8; block_size];
-    thread_rng().fill_bytes(&mut input1);
-    while input1.contains(&b';') || input1.contains(&b'=') {
-        thread_rng().fill_bytes(&mut input1);
-    }
-    let ciphertext1 = oracle.encrypt(&input1);
-    let mut input2 = vec![0u8; block_size];
-    thread_rng().fill_bytes(&mut input2);
-    while input2.contains(&b';') || input2.contains(&b'=') {
-        thread_rng().fill_bytes(&mut input2);
-    }
-    let ciphertext2 = oracle.encrypt(&input2);
+    // THIS CODE FOR FINDING PREFIX SIZE IS WRONG IT ONLY WORKS FOR PREFIX
+    // SIZES THAT ARE MULTIPLES OF BLOCK_SIZE
+    let bad_chars = b"=;";
+    let ciphertext1 = oracle.encrypt(&create_random_block(bad_chars));
+    let ciphertext2 = oracle.encrypt(&create_random_block(bad_chars));
     let prefix_length = ciphertext1
         .iter()
         .enumerate()
