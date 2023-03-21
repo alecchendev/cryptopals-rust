@@ -94,11 +94,11 @@ fn test_break_random_access_aes_ctr() {
 
 #[test]
 fn test_password_token() {
-    let seed = SystemTime::now()
+    let seed = (SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as u16
-        - thread_rng().gen_range(1..10000);
+        .as_secs()
+        - thread_rng().gen_range(40..1000)) as u16;
     let token = generate_password_token(seed);
     assert_eq!(crack_password_token(token).unwrap(), seed);
 }
@@ -106,11 +106,11 @@ fn test_password_token() {
 #[test]
 fn test_prefixed_prng() {
     let plaintext = [b'A'; 14];
-    let seed = SystemTime::now()
+    let seed = (SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as u16
-        - thread_rng().gen_range(40..1000);
+        .as_secs()
+        - thread_rng().gen_range(40..1000)) as u16;
     let ciphertext = prng_encrypt_with_prefix(&plaintext, seed);
     let cracked_seed = crack_prefixed(&ciphertext, &plaintext).unwrap();
     assert_eq!(cracked_seed, seed);
@@ -123,11 +123,11 @@ fn test_mt19937_cipher() {
             .iter()
             .map(|_| thread_rng().gen())
             .collect();
-        let seed = SystemTime::now()
+        let seed = (SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs() as u16
-            - thread_rng().gen_range(40..1000);
+            .as_secs()
+            - thread_rng().gen_range(40..1000)) as u16;
         let ciphertext = mt19937_encrypt(&plaintext, seed);
         assert_eq!(mt19937_decrypt(&ciphertext, seed), plaintext);
     }
