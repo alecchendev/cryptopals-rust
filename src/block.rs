@@ -8,9 +8,21 @@ use std::collections::HashMap;
 use crate::{
     basic::{decrypt_single_byte_xor, fixed_xor, transpose_blocks},
     generate_key,
-    oracle::{CbcBitFlippingOracle, CbcPaddingOracle, ProfileManager},
+    oracle::{CbcBitFlippingOracle, CbcPaddingOracle, ProfileManager, AesCbcOracleKeyAsIv},
     BLOCK_SIZE,
 };
+
+// Challenge 27
+
+pub(crate) fn recoverkey_from_cbc_key_as_iv(ciphertext: &[u8], oracle: &AesCbcOracleKeyAsIv) -> [u8; BLOCK_SIZE] {
+    let ciphertext = [&ciphertext[..BLOCK_SIZE], &[0u8; BLOCK_SIZE], &ciphertext[..BLOCK_SIZE], &ciphertext[(BLOCK_SIZE * 3)..]].concat();
+    let plaintext = match oracle.check_admin(&ciphertext) {
+        Ok(_) => panic!("Expected error"),
+        Err(plaintext) => plaintext,
+    };
+    let key = fixed_xor(&plaintext[..BLOCK_SIZE], &plaintext[(BLOCK_SIZE * 2)..(BLOCK_SIZE * 3)]);
+    key.try_into().unwrap()
+}
 
 // Challenge 20
 
@@ -490,31 +502,6 @@ pub(crate) fn detect_mode(ciphertext: &[u8]) -> AesBlockCipherMode {
 pub(crate) enum AesBlockCipherMode {
     Ecb,
     Cbc,
-}
-
-pub(crate) fn encrypt_oracle(input: &[u8]) -> (AesBlockCipherMode, Vec<u8>) {
-    // append 5-10 bytes before and after plaintext
-    let mut rng = thread_rng();
-    let random_bytes: Vec<u8> = (0..rng.gen_range(5..=10)).map(|_| rng.gen()).collect();
-    let mut plaintext = vec![];
-    plaintext.extend(random_bytes.iter());
-    plaintext.extend_from_slice(input);
-    plaintext.extend(random_bytes.iter());
-    let plaintext = pkcs7_pad(plaintext.as_slice(), 16);
-
-    // randomly encrypt using ECB or CBC
-    let key = generate_key();
-    match thread_rng().gen_range(0..2) {
-        0 => (AesBlockCipherMode::Ecb, aes_ecb_encrypt(&plaintext, &key)),
-        1 => {
-            let iv = generate_key();
-            (
-                AesBlockCipherMode::Cbc,
-                aes_cbc_encrypt(&plaintext, &key, &iv),
-            )
-        }
-        _ => panic!("Generated number out of range"),
-    }
 }
 
 // Challenge 10

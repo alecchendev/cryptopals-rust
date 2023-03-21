@@ -6,11 +6,48 @@ use crate::{
     block::{aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt, aes_ecb_encrypt, AesBlockCipherMode},
     generate_key, pkcs7_pad, pkcs7_unpad,
     stream::{aes_ctr_decrypt, aes_ctr_encrypt},
-    BLOCK_SIZE,
+    BLOCK_SIZE, basic::fixed_xor,
 };
 
 // Thoughts
 // make a string append/prepend oracle that takes and enum for which action to do
+
+// Challenge 27
+
+pub(crate) struct AesCbcOracleKeyAsIv<'a> {
+    cipher: AesCbcOracle,
+    prefix: &'a [u8],
+    suffix: &'a [u8]
+}
+
+impl<'a> AesCbcOracleKeyAsIv<'a> {
+    pub(crate) fn new(key: &[u8; BLOCK_SIZE], prefix: &'a [u8], suffix: &'a [u8]) -> Self {
+        let cipher = AesCbcOracle::new_with_args(key.to_owned(), key.to_owned());
+        Self {
+            cipher,
+            prefix,
+            suffix
+        }
+    }
+
+    pub(crate) fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        assert!(!plaintext.contains(&b';') && !plaintext.contains(&b'='));
+        let padded_plaintext = pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), BLOCK_SIZE);
+        self.cipher.encrypt(&padded_plaintext)
+    }
+
+    pub(crate) fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, Vec<u8>> {
+        let padded_plaintext = self.cipher.decrypt(ciphertext);
+        let plaintext = pkcs7_unpad(&padded_plaintext).unwrap();
+
+        if !plaintext.is_ascii() {
+            Err(plaintext)
+        } else {
+            Ok(String::from_utf8(plaintext).unwrap().contains(";admin=true;"))
+        }
+
+    }
+}
 
 // Challenge 26
 
@@ -145,6 +182,13 @@ impl AesCbcOracle {
             iv: generate_key(),
         }
     }
+
+    pub(crate) fn new_with_args(key: [u8; BLOCK_SIZE], iv: [u8; BLOCK_SIZE]) -> Self {
+        Self {
+            key,
+            iv
+        }
+    }
 }
 
 impl CipherOracle for AesCbcOracle {
@@ -184,12 +228,11 @@ impl<'a, T: CipherOracle> BitFlippingOracle<'a, T> {
 
         for piece in plaintext.split(|&x| x == b';') {
             let p: Vec<&[u8]> = piece.split(|&x| x == b'=').collect();
-            if p.len() != 2 {
-                continue;
-            }
-            let (key, value) = (p[0], p[1]);
-            if key == b"admin" && value == b"true" {
-                return Ok(true);
+            if p.len() == 2 {
+                let (key, value) = (p[0], p[1]);
+                if key == b"admin" && value == b"true" {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)

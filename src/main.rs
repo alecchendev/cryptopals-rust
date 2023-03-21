@@ -27,12 +27,12 @@ use basic::{
 use block::{
     aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt, aes_ecb_encrypt, byte_at_a_time_ecb_decrypt,
     byte_at_a_time_ecb_decrypt_harder, cbc_bit_flipping_attack, cbc_padding_oracle_attack,
-    detect_aes_ecb, detect_mode, encrypt_oracle, fixed_nonce_ctr_attack, forge_admin_ciphertext,
-    pkcs7_pad, pkcs7_unpad, ConsistentKey, EcbOracleHarder,
+    detect_aes_ecb, detect_mode, fixed_nonce_ctr_attack, forge_admin_ciphertext,
+    pkcs7_pad, pkcs7_unpad, ConsistentKey, EcbOracleHarder, recoverkey_from_cbc_key_as_iv
 };
 use oracle::{
     parse_key_value, AesCbcOracle, AesCtrOracle, BitFlippingOracle, CbcBitFlippingOracle,
-    CbcPaddingOracle, CtrBitFlippingOracle, CtrEditOracle, ProfileManager, Role, UserProfile,
+    CbcPaddingOracle, CtrBitFlippingOracle, CtrEditOracle, ProfileManager, Role, UserProfile, AesCbcOracleKeyAsIv, encrypt_oracle
 };
 use prng::{
     clone_mt19937, crack_mt19937_time_seed, crack_password_token, crack_prefixed,
@@ -44,11 +44,32 @@ use stream::{
     ctr_bit_flipping_attack,
 };
 
+
 fn main() {
     println!("Hello, world!");
 }
 
 const BLOCK_SIZE: usize = 16;
+
+// Challenge 27
+
+#[test]
+fn test_recover_key_from_cbc_key_as_iv() {
+    let key = generate_key();
+    let oracle = AesCbcOracleKeyAsIv::new(
+        &key,
+        b"comment1=cooking%20MCs;userdata=",
+        b";comment2=%20like%20a%20pound%20of%20bacon",
+    );
+    let mut plaintext = [0u8; 3 * BLOCK_SIZE];
+    thread_rng().fill_bytes(&mut plaintext);
+    while plaintext.iter().any(|x| b";=".contains(x)) {
+        thread_rng().fill_bytes(&mut plaintext);
+    }
+    let ciphertext = oracle.encrypt(&plaintext);
+    let recovered_key = recoverkey_from_cbc_key_as_iv(&ciphertext, &oracle);
+    assert_eq!(recovered_key, key);
+}
 
 // Challenge 26
 
