@@ -16,6 +16,7 @@ mod basic;
 mod block;
 mod prng;
 mod stream;
+mod mac;
 
 mod oracle;
 
@@ -43,6 +44,9 @@ use stream::{
     aes_ctr_decrypt, aes_ctr_encrypt, break_random_access_read_write_aes_ctr,
     ctr_bit_flipping_attack,
 };
+use mac::{
+    sha1, sha1_mac_sign, sha1_mac_verify
+};
 
 
 fn main() {
@@ -50,6 +54,28 @@ fn main() {
 }
 
 const BLOCK_SIZE: usize = 16;
+
+// Challenge 28
+
+#[test]
+fn test_sha1_keyed_mac() {
+    let key = generate_key();
+    let message = vec![0u8; thread_rng().gen_range(12..=256)]
+        .iter()
+        .map(|_| thread_rng().gen())
+        .collect::<Vec<u8>>();
+    let mut mac = sha1_mac_sign(&message, &key);
+    assert!(sha1_mac_verify(&mac, &message, &key));
+    mac[thread_rng().gen_range(0..20)] = thread_rng().gen();
+    assert!(!sha1_mac_verify(&mac, &message, &key));
+}
+
+#[test]
+fn test_sha1() {
+    let expected_digest = hex::decode("d3486ae9136e7856bc42212385ea797094475802").unwrap();
+    let digest = sha1(b"Hello world!");
+    assert_eq!(digest, &expected_digest[..]);
+}
 
 // Challenge 27
 
