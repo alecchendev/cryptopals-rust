@@ -8,19 +8,31 @@ use std::collections::HashMap;
 use crate::{
     basic::{decrypt_single_byte_xor, fixed_xor, transpose_blocks},
     generate_key,
-    oracle::{CbcBitFlippingOracle, CbcPaddingOracle, ProfileManager, AesCbcOracleKeyAsIv},
+    oracle::{AesCbcOracleKeyAsIv, CbcBitFlippingOracle, CbcPaddingOracle, ProfileManager},
     BLOCK_SIZE,
 };
 
 // Challenge 27
 
-pub(crate) fn recoverkey_from_cbc_key_as_iv(ciphertext: &[u8], oracle: &AesCbcOracleKeyAsIv) -> [u8; BLOCK_SIZE] {
-    let ciphertext = [&ciphertext[..BLOCK_SIZE], &[0u8; BLOCK_SIZE], &ciphertext[..BLOCK_SIZE], &ciphertext[(BLOCK_SIZE * 3)..]].concat();
+pub(crate) fn recoverkey_from_cbc_key_as_iv(
+    ciphertext: &[u8],
+    oracle: &AesCbcOracleKeyAsIv,
+) -> [u8; BLOCK_SIZE] {
+    let ciphertext = [
+        &ciphertext[..BLOCK_SIZE],
+        &[0u8; BLOCK_SIZE],
+        &ciphertext[..BLOCK_SIZE],
+        &ciphertext[(BLOCK_SIZE * 3)..],
+    ]
+    .concat();
     let plaintext = match oracle.check_admin(&ciphertext) {
         Ok(_) => panic!("Expected error"),
         Err(plaintext) => plaintext,
     };
-    let key = fixed_xor(&plaintext[..BLOCK_SIZE], &plaintext[(BLOCK_SIZE * 2)..(BLOCK_SIZE * 3)]);
+    let key = fixed_xor(
+        &plaintext[..BLOCK_SIZE],
+        &plaintext[(BLOCK_SIZE * 2)..(BLOCK_SIZE * 3)],
+    );
     key.try_into().unwrap()
 }
 

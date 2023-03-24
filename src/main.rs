@@ -2,6 +2,7 @@ use base64::{engine::general_purpose, Engine};
 use hex;
 use prng::MersenneTwisterRng;
 use rand::{thread_rng, Rng, RngCore};
+use sha1_smol::DIGEST_LENGTH;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
@@ -14,11 +15,10 @@ use thiserror;
 
 mod basic;
 mod block;
+mod mac;
+mod oracle;
 mod prng;
 mod stream;
-mod mac;
-
-mod oracle;
 
 use basic::{
     decrypt_repeating_key_xor, decrypt_single_byte_xor, decrypt_single_byte_xor_many, fixed_xor,
@@ -28,12 +28,14 @@ use basic::{
 use block::{
     aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt, aes_ecb_encrypt, byte_at_a_time_ecb_decrypt,
     byte_at_a_time_ecb_decrypt_harder, cbc_bit_flipping_attack, cbc_padding_oracle_attack,
-    detect_aes_ecb, detect_mode, fixed_nonce_ctr_attack, forge_admin_ciphertext,
-    pkcs7_pad, pkcs7_unpad, ConsistentKey, EcbOracleHarder, recoverkey_from_cbc_key_as_iv
+    detect_aes_ecb, detect_mode, fixed_nonce_ctr_attack, forge_admin_ciphertext, pkcs7_pad,
+    pkcs7_unpad, recoverkey_from_cbc_key_as_iv, ConsistentKey, EcbOracleHarder,
 };
+use mac::{digest_to_state, sha1, sha1_from_state, sha1_mac_sign, sha1_mac_verify, sha1_pad};
 use oracle::{
-    parse_key_value, AesCbcOracle, AesCtrOracle, BitFlippingOracle, CbcBitFlippingOracle,
-    CbcPaddingOracle, CtrBitFlippingOracle, CtrEditOracle, ProfileManager, Role, UserProfile, AesCbcOracleKeyAsIv, encrypt_oracle
+    encrypt_oracle, parse_key_value, AesCbcOracle, AesCbcOracleKeyAsIv, AesCtrOracle,
+    BitFlippingOracle, CbcBitFlippingOracle, CbcPaddingOracle, CtrBitFlippingOracle, CtrEditOracle,
+    ProfileManager, Role, UserProfile,
 };
 use prng::{
     clone_mt19937, crack_mt19937_time_seed, crack_password_token, crack_prefixed,
@@ -44,16 +46,68 @@ use stream::{
     aes_ctr_decrypt, aes_ctr_encrypt, break_random_access_read_write_aes_ctr,
     ctr_bit_flipping_attack,
 };
-use mac::{
-    sha1, sha1_mac_sign, sha1_mac_verify
-};
-
 
 fn main() {
     println!("Hello, world!");
 }
 
 const BLOCK_SIZE: usize = 16;
+
+// Challenge 29
+
+fn extend_secret_prefix_sha1_mac<F>(
+    mac: &[u8; DIGEST_LENGTH],
+    message: &[u8],
+    extension: &[u8],
+    check: F,
+) -> [u8; DIGEST_LENGTH]
+where
+    F: Fn(&[u8; DIGEST_LENGTH], &[u8]) -> bool,
+{
+    for key_len in 0..=64 {
+        let w = digest_to_state(mac);
+
+        let full_input_len = key_len + message.len() as u64;
+        let block_len = (full_input_len % 64) as usize;
+        let padding_len = if block_len < 56 { 64 } else { 128 };
+
+        let digest = sha1_from_state(
+            extension,
+            full_input_len + (padding_len - block_len) as u64,
+            &w,
+        );
+
+        let padding = get_padding(&[&vec![0; key_len as usize], message].concat());
+        let final_message = &[&message[..], &padding[..], extension].concat();
+        if check(&digest, final_message) {
+            return digest;
+        }
+    }
+    [0; DIGEST_LENGTH]
+}
+
+fn get_padding(message: &[u8]) -> Vec<u8> {
+    let padding = sha1_pad(message.len() as u64);
+    let block_len = message.len() % 64;
+    padding[block_len..(if block_len < 56 { 64 } else { 128 })].to_vec()
+}
+
+#[test]
+fn test_extend_secret_prefix_sha1_mac() {
+    let key = vec![0u8; thread_rng().gen_range(4..=64)]
+        .iter()
+        .map(|_| thread_rng().gen())
+        .collect::<Vec<u8>>();
+    let message = b"comment1=cooking%20MCs;userdata=foo;comment2=%20like%20a%20pound%20of%20bacon";
+    let mac = sha1_mac_sign(message, &key);
+    let extension = b";admin=true";
+    let new_mac = extend_secret_prefix_sha1_mac(&mac, message, extension, |mac, message| {
+        sha1_mac_verify(mac, message, &key)
+    });
+    let padding = get_padding(&[&key[..], message].concat());
+    let final_message = &[&message[..], &padding[..], extension].concat();
+    assert!(sha1_mac_verify(&new_mac, final_message, &key));
+}
 
 // Challenge 28
 

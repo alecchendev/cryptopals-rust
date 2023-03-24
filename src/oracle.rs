@@ -3,10 +3,13 @@ use std::{collections::HashMap, error::Error, ops::Range};
 use rand::{thread_rng, Rng};
 
 use crate::{
-    block::{aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt, aes_ecb_encrypt, AesBlockCipherMode},
+    basic::fixed_xor,
+    block::{
+        aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt, aes_ecb_encrypt, AesBlockCipherMode,
+    },
     generate_key, pkcs7_pad, pkcs7_unpad,
     stream::{aes_ctr_decrypt, aes_ctr_encrypt},
-    BLOCK_SIZE, basic::fixed_xor,
+    BLOCK_SIZE,
 };
 
 // Thoughts
@@ -17,7 +20,7 @@ use crate::{
 pub(crate) struct AesCbcOracleKeyAsIv<'a> {
     cipher: AesCbcOracle,
     prefix: &'a [u8],
-    suffix: &'a [u8]
+    suffix: &'a [u8],
 }
 
 impl<'a> AesCbcOracleKeyAsIv<'a> {
@@ -26,13 +29,14 @@ impl<'a> AesCbcOracleKeyAsIv<'a> {
         Self {
             cipher,
             prefix,
-            suffix
+            suffix,
         }
     }
 
     pub(crate) fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
         assert!(!plaintext.contains(&b';') && !plaintext.contains(&b'='));
-        let padded_plaintext = pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), BLOCK_SIZE);
+        let padded_plaintext =
+            pkcs7_pad(&[self.prefix, plaintext, self.suffix].concat(), BLOCK_SIZE);
         self.cipher.encrypt(&padded_plaintext)
     }
 
@@ -43,9 +47,10 @@ impl<'a> AesCbcOracleKeyAsIv<'a> {
         if !plaintext.is_ascii() {
             Err(plaintext)
         } else {
-            Ok(String::from_utf8(plaintext).unwrap().contains(";admin=true;"))
+            Ok(String::from_utf8(plaintext)
+                .unwrap()
+                .contains(";admin=true;"))
         }
-
     }
 }
 
@@ -184,10 +189,7 @@ impl AesCbcOracle {
     }
 
     pub(crate) fn new_with_args(key: [u8; BLOCK_SIZE], iv: [u8; BLOCK_SIZE]) -> Self {
-        Self {
-            key,
-            iv
-        }
+        Self { key, iv }
     }
 }
 
