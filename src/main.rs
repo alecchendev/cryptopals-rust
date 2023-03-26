@@ -31,7 +31,10 @@ use block::{
     detect_aes_ecb, detect_mode, fixed_nonce_ctr_attack, forge_admin_ciphertext, pkcs7_pad,
     pkcs7_unpad, recoverkey_from_cbc_key_as_iv, ConsistentKey, EcbOracleHarder,
 };
-use mac::{digest_to_state, sha1, sha1_from_state, sha1_mac_sign, sha1_mac_verify, sha1_pad};
+use mac::{
+    digest_to_state, md4_digest_to_state, md4_from_state, md4_pad, sha1, sha1_from_state,
+    sha1_mac_sign, md4_mac_sign, md4_mac_verify, sha1_mac_verify, sha1_pad, DIGEST_LENGTH_MD4, DIGEST_LENGTH_SHA1,
+};
 use oracle::{
     encrypt_oracle, parse_key_value, AesCbcOracle, AesCbcOracleKeyAsIv, AesCtrOracle,
     BitFlippingOracle, CbcBitFlippingOracle, CbcPaddingOracle, CtrBitFlippingOracle, CtrEditOracle,
@@ -53,16 +56,59 @@ fn main() {
 
 const BLOCK_SIZE: usize = 16;
 
-// Challenge 29
+// Challenge 30
 
-fn extend_secret_prefix_sha1_mac<F>(
-    mac: &[u8; DIGEST_LENGTH],
+fn extend_secret_prefix_md4_mac<F>(
+    mac: &[u8; DIGEST_LENGTH_MD4],
     message: &[u8],
     extension: &[u8],
     check: F,
-) -> [u8; DIGEST_LENGTH]
+) -> [u8; DIGEST_LENGTH_MD4]
 where
-    F: Fn(&[u8; DIGEST_LENGTH], &[u8]) -> bool,
+    F: Fn(&[u8; DIGEST_LENGTH_MD4], &[u8]) -> bool,
+{
+    let w = md4_digest_to_state(mac);
+    for key_len in 0..=64 {
+        let full_input_len = key_len + message.len() as u64;
+        let padding = md4_pad(full_input_len);
+
+        let digest = md4_from_state(extension, full_input_len + padding.len() as u64, &w);
+
+        let final_message = &[&message[..], &padding[..], extension].concat();
+        if check(&digest, final_message) {
+            return digest;
+        }
+    }
+    [0; DIGEST_LENGTH_MD4]
+}
+
+#[test]
+fn test_extend_secret_prefix_md4_mac() {
+    let key = vec![0u8; thread_rng().gen_range(4..=64)]
+        .iter()
+        .map(|_| thread_rng().gen())
+        .collect::<Vec<u8>>();
+    let message = b"comment1=cooking%20MCs;userdata=foo;comment2=%20like%20a%20pound%20of%20bacon";
+    let mac = md4_mac_sign(message, &key);
+    let extension = b";admin=true";
+    let new_mac = extend_secret_prefix_md4_mac(&mac, message, extension, |mac, message| {
+        md4_mac_verify(mac, message, &key)
+    });
+    let padding = md4_pad(key.len() as u64 + message.len() as u64);
+    let final_message = &[&message[..], &padding[..], extension].concat();
+    assert!(md4_mac_verify(&new_mac, final_message, &key));
+}
+
+// Challenge 29
+
+fn extend_secret_prefix_sha1_mac<F>(
+    mac: &[u8; DIGEST_LENGTH_SHA1],
+    message: &[u8],
+    extension: &[u8],
+    check: F,
+) -> [u8; DIGEST_LENGTH_SHA1]
+where
+    F: Fn(&[u8; DIGEST_LENGTH_SHA1], &[u8]) -> bool,
 {
     for key_len in 0..=64 {
         let w = digest_to_state(mac);
@@ -83,7 +129,7 @@ where
             return digest;
         }
     }
-    [0; DIGEST_LENGTH]
+    [0; DIGEST_LENGTH_SHA1]
 }
 
 fn get_padding(message: &[u8]) -> Vec<u8> {
