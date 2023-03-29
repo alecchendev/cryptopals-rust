@@ -1,6 +1,40 @@
 use rand::{thread_rng, Rng};
-// use sha1_smol::DIGEST_LENGTH;
 use sha1_smol;
+
+// Challenge 31
+
+pub fn sha1_hmac_sign(mut key: &[u8], message: &[u8]) -> [u8; DIGEST_LENGTH_SHA1] {
+    let block_size = 64;
+    let compressed_key = sha1(key);
+    let key = if key.len() > block_size {
+        &compressed_key
+    } else {
+        key
+    };
+
+    let mut inner_pad = [0x36; 64];
+    inner_pad
+        .iter_mut()
+        .zip(key.iter())
+        .for_each(|(byte, key_byte)| *byte ^= key_byte);
+    let mut outer_pad = [0x5c; 64];
+    outer_pad
+        .iter_mut()
+        .zip(key.iter())
+        .for_each(|(byte, key_byte)| *byte ^= key_byte);
+
+    let hash_1 = sha1(&[&inner_pad, message].concat());
+    let hash_2 = sha1(&[&outer_pad, &hash_1[..]].concat());
+
+    hash_2
+}
+
+#[test]
+fn test_sha1_hmac() {
+    let expected = hex::decode("de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9").unwrap();
+    let got = sha1_hmac_sign(b"key", b"The quick brown fox jumps over the lazy dog");
+    assert_eq!(got, &expected[..]);
+}
 
 // Challenge 30
 
