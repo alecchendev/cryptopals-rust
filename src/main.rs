@@ -32,8 +32,9 @@ use block::{
     pkcs7_unpad, recoverkey_from_cbc_key_as_iv, ConsistentKey, EcbOracleHarder,
 };
 use mac::{
-    digest_to_state, md4_digest_to_state, md4_from_state, md4_pad, sha1, sha1_from_state,
-    sha1_mac_sign, md4_mac_sign, md4_mac_verify, sha1_mac_verify, sha1_pad, DIGEST_LENGTH_MD4, DIGEST_LENGTH_SHA1,
+    digest_to_state, md4_digest_to_state, md4_from_state, md4_mac_sign, md4_mac_verify, md4_pad,
+    sha1, sha1_from_state, sha1_mac_sign, sha1_mac_verify, sha1_pad, DIGEST_LENGTH_MD4,
+    DIGEST_LENGTH_SHA1,
 };
 use oracle::{
     encrypt_oracle, parse_key_value, AesCbcOracle, AesCbcOracleKeyAsIv, AesCtrOracle,
@@ -50,11 +51,39 @@ use stream::{
     ctr_bit_flipping_attack,
 };
 
-fn main() {
-    println!("Hello, world!");
+#[tokio::main]
+async fn main() {
+    let routes = hello();
+    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
 }
 
 const BLOCK_SIZE: usize = 16;
+
+// Challenge 31
+
+use tokio;
+use warp::{Filter, Reply};
+use reqwest::Client;
+
+#[tokio::test]
+async fn test_server() {
+    let port = 3030;
+    tokio::task::spawn(async move { warp::serve(hello()).run(([127, 0, 0, 1], port)).await });
+
+    // tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Make a GET request to the server's /hello endpoint
+    let url = format!("http://localhost:{}/hello", port);
+    let response = Client::new().get(&url).send().await.unwrap();
+
+    // Check that the response is a 200 OK with the expected body
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "Hello World");
+}
+
+fn hello() -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
+    warp::path("hello").map(|| "Hello World")
+}
 
 // Challenge 30
 
