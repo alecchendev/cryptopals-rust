@@ -9,6 +9,7 @@ use std::fs;
 use std::io::prelude::*;
 use std::ops::Range;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
 use thiserror;
@@ -53,8 +54,20 @@ use stream::{
 
 #[tokio::main]
 async fn main() {
-    let routes = hello();
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    // let routes = hello();
+    // warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    let port = 3030;
+    tokio::task::spawn(async move {
+        let route = warp::any().and(warp::path("test")).and(warp::query::<HashMap<String, String>>()).map(|map: HashMap<String, String>| {
+            let mut response: Vec<String> = vec![String::from("Hello")];
+            for (key, value) in map.into_iter() {
+                response.push(format!("{}={}", key, value))
+            }
+            http::Response::builder().body(response.join(";"))
+        });
+        warp::serve(route).run(([127, 0, 0, 1], port)).await
+    });
+    tokio::time::sleep(Duration::from_secs(30)).await;
 }
 
 const BLOCK_SIZE: usize = 16;
@@ -62,8 +75,76 @@ const BLOCK_SIZE: usize = 16;
 // Challenge 31
 
 use tokio;
-use warp::{Filter, Reply};
-use reqwest::Client;
+use warp::{Filter, Reply, http};
+use reqwest::{Client, Response};
+
+fn sha1_hmac_sign(mut key: &[u8], message: &[u8]) -> [u8; DIGEST_LENGTH_SHA1] {
+    let block_size = 64;
+    let compressed_key = sha1(key);
+    let key = if key.len() > block_size { &compressed_key } else { key };
+
+    let mut inner_pad = [0x36; 64];
+    inner_pad.iter_mut().zip(key.iter()).for_each(|(byte, key_byte)| *byte ^= key_byte);
+    let mut outer_pad = [0x5c; 64];
+    outer_pad.iter_mut().zip(key.iter()).for_each(|(byte, key_byte)| *byte ^= key_byte);
+    
+    let hash_1 = sha1(&[&inner_pad, message].concat());
+    let hash_2 = sha1(&[&outer_pad, &hash_1[..]].concat());
+
+    hash_2
+}
+
+#[test]
+fn test_sha1_hmac() {
+    let expected = hex::decode("de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9").unwrap();
+    let got = sha1_hmac_sign(b"key", b"The quick brown fox jumps over the lazy dog");
+    assert_eq!(got, &expected[..]);
+}
+
+fn insecure_compare(a: &[u8], b: &[u8]) -> bool {
+    for (byte_a, byte_b) in a.iter().zip(b.iter()) {
+        if byte_a != byte_b {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    a.len() == b.len()
+}
+
+async fn send_request(port: u16, file: &str, sig: &str) -> Response {
+    let url = format!("http://localhost:{}/test?file={}&signature={}", port, file, sig);
+    Client::new().get(&url).send().await.unwrap()
+}
+
+
+#[tokio::test]
+async fn test_timing_attack() {
+    let port = 9000;
+    let key = vec![0u8; thread_rng().gen_range(4..=64)]
+        .iter()
+        .map(|_| thread_rng().gen())
+        .collect::<Vec<u8>>();
+    let hmac = sha1_hmac_sign(&key, b"foo");
+
+    tokio::task::spawn(async move {
+        let route = warp::any().and(warp::path("test"))
+            .and(warp::query::<HashMap<String, String>>())
+            .map(move |map: HashMap<String, String>| {
+                let file = map.get("file").unwrap();
+                let signature = hex::decode(map.get("signature").unwrap()).unwrap();
+                let hmac = sha1_hmac_sign(&key, file.as_bytes());
+                let valid_signature = insecure_compare(&signature, &hmac);
+                http::Response::builder().status(if valid_signature { 200 } else { 500 }).body("")
+            });
+        warp::serve(route).run(([127, 0, 0, 1], port)).await
+    });
+
+    let response = send_request(port, "foo", &hex::encode(hmac)).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let response = send_request(port, "asdf", "1234").await;
+    assert_eq!(response.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+}
 
 #[tokio::test]
 async fn test_server() {
