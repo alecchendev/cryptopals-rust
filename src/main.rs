@@ -2,6 +2,7 @@ use base64::{engine::general_purpose, Engine};
 use hex;
 use prng::MersenneTwisterRng;
 use rand::{thread_rng, Rng, RngCore};
+use reqwest::{Client, Response, StatusCode};
 use sha1_smol::DIGEST_LENGTH;
 use std::collections::HashMap;
 use std::error::Error;
@@ -10,9 +11,11 @@ use std::io::prelude::*;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
 use thiserror;
+use tokio;
+use warp::{http, Filter, Reply};
 
 mod basic;
 mod block;
@@ -34,8 +37,8 @@ use block::{
 };
 use mac::{
     digest_to_state, md4_digest_to_state, md4_from_state, md4_mac_sign, md4_mac_verify, md4_pad,
-    sha1, sha1_from_state, sha1_mac_sign, sha1_mac_verify, sha1_pad, DIGEST_LENGTH_MD4,
-    DIGEST_LENGTH_SHA1, sha1_hmac_sign
+    sha1, sha1_from_state, sha1_hmac_sign, sha1_mac_sign, sha1_mac_verify, sha1_pad,
+    DIGEST_LENGTH_MD4, DIGEST_LENGTH_SHA1,
 };
 use oracle::{
     encrypt_oracle, parse_key_value, AesCbcOracle, AesCbcOracleKeyAsIv, AesCtrOracle,
@@ -52,155 +55,11 @@ use stream::{
     ctr_bit_flipping_attack,
 };
 
-#[tokio::main]
-async fn main() {
-    let port = 9000;
-    let key = vec![0u8; thread_rng().gen_range(4..=64)]
-        .iter()
-        .map(|_| thread_rng().gen())
-        .collect::<Vec<u8>>();
-    let hmac = sha1_hmac_sign(&key, b"foo");
-    let rand_file = [b'A'; 30];
-    let expected = sha1_hmac_sign(&key, rand_file.as_slice());
-
-    tokio::task::spawn(async move {
-        let route = warp::any()
-            .and(warp::path("test"))
-            .and(warp::query::<HashMap<String, String>>())
-            .map(move |map: HashMap<String, String>| {
-                let file = map.get("file").unwrap();
-                let signature = hex::decode(map.get("signature").unwrap()).unwrap();
-                let hmac = sha1_hmac_sign(&key, file.as_bytes());
-                let valid_signature = less_insecure_compare(&signature, &hmac);
-                http::Response::builder()
-                    .status(if valid_signature { 200 } else { 500 })
-                    .body("")
-            });
-        warp::serve(route).run(([127, 0, 0, 1], port)).await
-    });
-
-    let response = send_request(port, "foo", &hex::encode(hmac)).await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-
-    let response = send_request(port, "asdf", "1234").await;
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
-    );
-
-    let got = less_artificial_timing_attack(&rand_file).await;
-    assert_eq!(got, expected);
-}
+fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
 // Challenge 32
-
-#[tokio::test]
-async fn test_less_artificial_timing_attack() {
-    let port = 9000;
-    let key = vec![0u8; thread_rng().gen_range(4..=64)]
-        .iter()
-        .map(|_| thread_rng().gen())
-        .collect::<Vec<u8>>();
-    let hmac = sha1_hmac_sign(&key, b"foo");
-    // let rand_file = vec![0u8; thread_rng().gen_range(4..=64)]
-    //     .iter()
-    //     .map(|_| thread_rng().gen())
-    //     .collect::<Vec<u8>>();
-    let rand_file = [b'A'; 30];
-    let expected = sha1_hmac_sign(&key, rand_file.as_slice());
-
-    tokio::task::spawn(async move {
-        let route = warp::any()
-            .and(warp::path("test"))
-            .and(warp::query::<HashMap<String, String>>())
-            .map(move |map: HashMap<String, String>| {
-                let file = map.get("file").unwrap();
-                let signature = hex::decode(map.get("signature").unwrap()).unwrap();
-                let hmac = sha1_hmac_sign(&key, file.as_bytes());
-                let valid_signature = less_insecure_compare(&signature, &hmac);
-                http::Response::builder()
-                    .status(if valid_signature { 200 } else { 500 })
-                    .body("")
-            });
-        warp::serve(route).run(([127, 0, 0, 1], port)).await
-    });
-
-    let response = send_request(port, "foo", &hex::encode(hmac)).await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-
-    let response = send_request(port, "asdf", "1234").await;
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
-    );
-
-    let got = less_artificial_timing_attack(&rand_file).await;
-    assert_eq!(got, expected);
-}
-
-async fn less_artificial_timing_attack(file: &[u8]) -> [u8; DIGEST_LENGTH_SHA1] {
-    let file = String::from_utf8(file.to_vec()).unwrap();
-    let mut signature = [0u8; DIGEST_LENGTH_SHA1];
-    let mut prev_request_time = 0;
-    for i in 0..DIGEST_LENGTH_SHA1 {
-        let mut times = [0u128; 256];
-        for byte in 0..=255 {
-            let mut sig = signature.clone();
-            sig[i] = byte;
-            let sig = hex::encode(&sig[..(i+1)]);
-            let start_time = std::time::Instant::now();
-            let _ = send_request(9000, &file, &sig).await;
-            let end_time = std::time::Instant::now();
-            let request_time = end_time.duration_since(start_time).as_millis();
-            let added_time = request_time.checked_sub(prev_request_time).unwrap_or(0);
-            times[byte as usize] = added_time;
-        }
-        let mut byte_with_time = (0, 0);
-        times.iter().enumerate().for_each(|(byte, &time)| if time > byte_with_time.1 { byte_with_time = (byte, time)});
-        let (best_byte, _) = byte_with_time;
-        signature[i] = best_byte as u8;
-        let sum_non_best: u128 = times.iter().enumerate().filter(|(byte, _)| *byte != best_byte).map(|(_, time)| time).sum();
-        let avg_non_best = sum_non_best / (times.len().checked_sub(1).unwrap_or(1) as u128);
-        prev_request_time += avg_non_best;
-        println!("{}", best_byte);
-    }
-    signature
-}
-
-async fn artificial_timing_attack(file: &[u8]) -> [u8; DIGEST_LENGTH_SHA1] {
-    let file = String::from_utf8(file.to_vec()).unwrap();
-    let mut signature = [0u8; DIGEST_LENGTH_SHA1];
-    let mut prev_request_time = 0;
-    let threshold = 20;
-    for i in 0..DIGEST_LENGTH_SHA1 {
-        for byte in 0..=255 {
-            let mut sig = signature.clone();
-            sig[i] = byte;
-            let sig = hex::encode(&sig[..(i+1)]);
-            let start_time = std::time::Instant::now();
-            let _ = send_request(9000, &file, &sig).await;
-            let end_time = std::time::Instant::now();
-            let request_time = end_time.duration_since(start_time).as_millis();
-            let added_time = request_time.checked_sub(prev_request_time).unwrap_or(0);
-            let paused = added_time >= threshold;
-            if paused {
-                signature[i] = byte;
-                prev_request_time += added_time;
-                println!("{}", byte);
-                break;
-            }
-        }
-    }
-    signature
-}
-
-// fn timing_attack<F>(file: &[u8], send_request: F) -> [u8; DIGEST_LENGTH_SHA1]
-// where F: Fn(&[u8; DIGEST_LENGTH_MD4], &[u8]) -> bool,
-// {
-//
-// }
 
 fn less_insecure_compare(a: &[u8], b: &[u8]) -> bool {
     for (byte_a, byte_b) in a.iter().zip(b.iter()) {
@@ -212,46 +71,97 @@ fn less_insecure_compare(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len()
 }
 
-// Challenge 31
-
-use reqwest::{Client, Response};
-use tokio;
-use warp::{http, Filter, Reply};
-
-
-fn insecure_compare(a: &[u8], b: &[u8]) -> bool {
-    for (byte_a, byte_b) in a.iter().zip(b.iter()) {
-        if byte_a != byte_b {
-            return false;
+async fn less_artificial_timing_attack<F, Fut>(
+    port: u16,
+    file: &[u8],
+    send_request: F,
+) -> [u8; DIGEST_LENGTH_SHA1]
+where
+    F: Fn(String, String) -> Fut,
+    Fut: Future<Output = Response>,
+{
+    let file = String::from_utf8(file.to_vec()).unwrap();
+    let mut signature = [0u8; DIGEST_LENGTH_SHA1];
+    let rounds = 8;
+    for i in 0..DIGEST_LENGTH_SHA1 {
+        let mut best = (0, 0); // (byte, time)
+        for byte in 0..=255 {
+            let mut sig = signature.clone();
+            sig[i] = byte;
+            let sig = hex::encode(&sig[..(i + 1)]);
+            let mut times = vec![0u128; rounds];
+            for round in 0..rounds {
+                let start_time = std::time::Instant::now();
+                let _ = send_request(file.clone(), sig.clone()).await;
+                let end_time = std::time::Instant::now();
+                let request_time = end_time.duration_since(start_time).as_millis();
+                times[round] = request_time;
+            }
+            times.sort();
+            let median_time = if rounds % 2 == 0 {
+                (times[rounds / 2] + times[rounds / 2 + 1]) / 2
+            } else {
+                times[rounds / 2]
+            };
+            if median_time > best.1 {
+                best = (byte, median_time);
+            }
         }
-        std::thread::sleep(Duration::from_millis(25));
+        signature[i] = best.0;
     }
-    a.len() == b.len()
+    signature
 }
 
-async fn send_request(port: u16, file: &str, sig: &str) -> Response {
-    let url = format!(
-        "http://localhost:{}/test?file={}&signature={}",
-        port, file, sig
-    );
-    Client::new().get(&url).send().await.unwrap()
-}
-
+#[cfg(wait)]
 #[tokio::test]
-async fn test_artificial_timing_attack() {
-    let port = 9000;
+async fn test_less_artificial_timing_attack() {
+    let port = 9001;
     let key = vec![0u8; thread_rng().gen_range(4..=64)]
         .iter()
         .map(|_| thread_rng().gen())
         .collect::<Vec<u8>>();
-    let hmac = sha1_hmac_sign(&key, b"foo");
-    // let rand_file = vec![0u8; thread_rng().gen_range(4..=64)]
-    //     .iter()
-    //     .map(|_| thread_rng().gen())
-    //     .collect::<Vec<u8>>();
-    let rand_file = [b'A'; 30];
+
+    let test_data = [
+        (
+            "foo",
+            hex::encode(sha1_hmac_sign(&key, "foo".as_bytes())),
+            StatusCode::OK,
+        ),
+        (
+            "asdf",
+            String::from("1234"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    ];
+    let rand_file = get_random_utf8();
     let expected = sha1_hmac_sign(&key, rand_file.as_slice());
 
+    start_server(port, Arc::new(key), less_insecure_compare);
+
+    for (file, hmac, expected_status) in test_data.iter() {
+        let response = send_request(port, file.to_string(), hmac.to_string()).await;
+        assert_eq!(response.status(), *expected_status);
+    }
+
+    let got =
+        less_artificial_timing_attack(port, &rand_file, |file, sig| send_request(port, file, sig))
+            .await;
+    assert_eq!(got, expected);
+}
+
+// Challenge 31
+
+fn get_random_utf8() -> Vec<u8> {
+    let bytes = (0..thread_rng().gen_range(4..=64))
+        .map(|_| thread_rng().gen())
+        .collect::<Vec<u8>>();
+    String::from_utf8_lossy(&bytes).as_bytes().to_vec()
+}
+
+fn start_server<F: Clone + Send + Sync + 'static>(port: u16, key: Arc<Vec<u8>>, compare: F)
+where
+    F: Fn(&[u8], &[u8]) -> bool,
+{
     tokio::task::spawn(async move {
         let route = warp::any()
             .and(warp::path("test"))
@@ -260,45 +170,98 @@ async fn test_artificial_timing_attack() {
                 let file = map.get("file").unwrap();
                 let signature = hex::decode(map.get("signature").unwrap()).unwrap();
                 let hmac = sha1_hmac_sign(&key, file.as_bytes());
-                let valid_signature = insecure_compare(&signature, &hmac);
+                let valid_signature = compare(&signature, &hmac);
                 http::Response::builder()
                     .status(if valid_signature { 200 } else { 500 })
                     .body("")
             });
         warp::serve(route).run(([127, 0, 0, 1], port)).await
     });
+    std::thread::sleep(Duration::from_secs(1));
+}
 
-    let response = send_request(port, "foo", &hex::encode(hmac)).await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-
-    let response = send_request(port, "asdf", "1234").await;
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+async fn send_request(port: u16, file: String, sig: String) -> Response {
+    let url = format!(
+        "http://localhost:{}/test?file={}&signature={}",
+        port, file, sig
     );
-
-    let got = artificial_timing_attack(&rand_file).await;
-    assert_eq!(got, expected);
+    Client::new().get(&url).send().await.unwrap()
 }
 
+fn insecure_compare(a: &[u8], b: &[u8]) -> bool {
+    for (byte_a, byte_b) in a.iter().zip(b.iter()) {
+        if byte_a != byte_b {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    a.len() == b.len()
+}
+
+use std::future::Future;
+
+async fn artificial_timing_attack<F, Fut>(file: &[u8], send_request: F) -> [u8; DIGEST_LENGTH_SHA1]
+where
+    F: Fn(String, String) -> Fut,
+    Fut: Future<Output = Response>,
+{
+    let file = String::from_utf8(file.to_vec()).unwrap();
+    let mut signature = [0u8; DIGEST_LENGTH_SHA1];
+    for i in 0..DIGEST_LENGTH_SHA1 {
+        let mut best = (0, 0); // (byte, time)
+        for byte in 0..=255 {
+            let mut sig = signature.clone();
+            sig[i] = byte;
+            let sig = hex::encode(&sig[..(i + 1)]);
+
+            let start_time = std::time::Instant::now();
+            let _ = send_request(file.clone(), sig).await;
+            let end_time = std::time::Instant::now();
+
+            let request_time = end_time.duration_since(start_time).as_millis();
+            if request_time > best.1 {
+                best = (byte, request_time);
+            }
+        }
+        signature[i] = best.0;
+    }
+    signature
+}
+
+#[cfg(wait)]
 #[tokio::test]
-async fn test_server() {
-    let port = 3030;
-    tokio::task::spawn(async move { warp::serve(hello()).run(([127, 0, 0, 1], port)).await });
+async fn test_artificial_timing_attack() {
+    let port = 9000;
+    let key = vec![0u8; thread_rng().gen_range(4..=64)]
+        .iter()
+        .map(|_| thread_rng().gen())
+        .collect::<Vec<u8>>();
 
-    // tokio::time::sleep(Duration::from_secs(1)).await;
+    let test_data = [
+        (
+            "foo",
+            hex::encode(sha1_hmac_sign(&key, "foo".as_bytes())),
+            StatusCode::OK,
+        ),
+        (
+            "asdf",
+            String::from("1234"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    ];
+    let rand_file = get_random_utf8();
+    let expected = sha1_hmac_sign(&key, rand_file.as_slice());
 
-    // Make a GET request to the server's /hello endpoint
-    let url = format!("http://localhost:{}/hello", port);
-    let response = Client::new().get(&url).send().await.unwrap();
+    start_server(port, Arc::new(key), insecure_compare);
 
-    // Check that the response is a 200 OK with the expected body
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert_eq!(response.text().await.unwrap(), "Hello World");
-}
+    for (file, hmac, expected_status) in test_data.iter() {
+        let response = send_request(port, file.to_string(), hmac.to_string()).await;
+        assert_eq!(response.status(), *expected_status);
+    }
 
-fn hello() -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
-    warp::path("hello").map(|| "Hello World")
+    let got =
+        artificial_timing_attack(&rand_file, |file, sig| send_request(port, file, sig)).await;
+    assert_eq!(got, expected);
 }
 
 // Challenge 30
