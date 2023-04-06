@@ -238,17 +238,11 @@ pub(crate) fn cbc_bit_flipping_attack(oracle: &CbcBitFlippingOracle) -> Vec<u8> 
 
 // Challenge 15
 
-#[derive(thiserror::Error, Debug)]
-pub(crate) enum MyError {
-    #[error("Invalid PKCS#7 padding")]
-    InvalidPkcs7Padding,
-}
-
-pub(crate) fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
+pub(crate) fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, ()> {
     assert!(!input.is_empty());
     let last_byte = *input.last().unwrap();
     if last_byte == 0 || last_byte > 16 {
-        return Err(MyError::InvalidPkcs7Padding);
+        return Err(());
     }
     let is_padded = input[(input.len() - last_byte as usize)..]
         .iter()
@@ -256,7 +250,7 @@ pub(crate) fn pkcs7_unpad(input: &[u8]) -> Result<Vec<u8>, MyError> {
     if is_padded {
         Ok(input[..(input.len() - last_byte as usize)].to_vec())
     } else {
-        Err(MyError::InvalidPkcs7Padding)
+        Err(())
     }
 }
 

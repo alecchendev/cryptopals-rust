@@ -224,7 +224,7 @@ impl<'a, T: CipherOracle> BitFlippingOracle<'a, T> {
         self.cipher.encrypt(&padded_plaintext)
     }
 
-    pub(crate) fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, Box<dyn Error>> {
+    pub(crate) fn check_admin(&self, ciphertext: &[u8]) -> Result<bool, ()> {
         let padded_plaintext = self.cipher.decrypt(ciphertext);
         let plaintext = pkcs7_unpad(&padded_plaintext)?;
 

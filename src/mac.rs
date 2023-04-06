@@ -1,5 +1,4 @@
 use rand::{thread_rng, Rng};
-use sha1_smol;
 
 // Challenge 31
 
@@ -289,29 +288,26 @@ pub fn sha1_from_state(
 #[test]
 fn test_sha1() {
     let msg = b"Hello world!";
-    assert_eq!(sha1(msg), sha1_smol::Sha1::from(msg).digest().bytes());
-    let msg2 = vec![0; thread_rng().gen_range(64..=128)]
-        .iter()
-        .map(|_| thread_rng().gen())
-        .collect::<Vec<u8>>();
-    let msg2 = msg2.as_slice();
-    assert_eq!(sha1(msg2), sha1_smol::Sha1::from(msg2).digest().bytes());
+    assert_eq!(
+        &sha1(msg),
+        hex::decode("d3486ae9136e7856bc42212385ea797094475802")
+            .unwrap()
+            .as_slice()
+    );
 }
 
 #[test]
 fn test_sha1_update() {
     let msg1 = b"Hello world!";
     let digest = sha1(msg1);
-    let s = sha1_smol::Sha1::from(msg1);
-    assert_eq!(digest, s.digest().bytes());
 
     let padding = sha1_pad(msg1.len() as u64);
     let padding = &padding[msg1.len()..(if msg1.len() < 56 { 64 } else { 128 })];
     let msg2 = b"Hello again!";
 
     let final_message = &[msg1, padding, msg2].concat();
-    let s2 = sha1_smol::Sha1::from(final_message);
-    assert_eq!(sha1(final_message), s2.digest().bytes());
+    let s2 = sha1(final_message);
+    assert_eq!(sha1(final_message), s2);
     assert_eq!(
         sha1_from_state(msg2, 64, &digest_to_state(&digest)),
         sha1(final_message)

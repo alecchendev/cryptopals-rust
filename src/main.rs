@@ -3,7 +3,6 @@ use hex;
 use prng::MersenneTwisterRng;
 use rand::{thread_rng, Rng, RngCore};
 use reqwest::{Client, Response, StatusCode};
-use sha1_smol::DIGEST_LENGTH;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
@@ -13,7 +12,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fmt, thread};
-use thiserror;
 use tokio;
 use warp::{http, Filter, Reply};
 
