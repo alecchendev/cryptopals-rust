@@ -59,6 +59,180 @@ fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
+// Challenge 33
+
+// A naive, probably very slow big int implementation because I'm too lazy to deal with libraries
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct U2048(pub [u8; 256]);
+
+impl U2048 {
+    const SIZE: usize = 256;
+
+    fn mul(&self, rhs: &U2048) -> Self {
+        let lhs = self.0;
+        let mut res = U2048([0u8; Self::SIZE]);
+        for i in (0..Self::SIZE).rev() {
+            let a = lhs[i] as u16;
+            let mut temp = U2048([0u8; Self::SIZE]);
+            for j in (0..Self::SIZE).rev() {
+                let b = rhs.0[j] as u16;
+                let c = a * b;
+                let mut temp2 = [0u8; Self::SIZE];
+                if j < 1 + (Self::SIZE - 1 - i) {
+                    if c >> 8 > 0 {
+                        panic!();
+                    }
+                    break;
+                }
+                temp2[j - 1 - (Self::SIZE - 1 - i)] = (c >> 8) as u8;
+                if j < (Self::SIZE - 1 - i) {
+                    if c & 0xFF > 0 {
+                        panic!();
+                    }
+                    break;
+                }
+                temp2[j - (Self::SIZE - 1 - i)] = (c & 0xFF) as u8;
+                temp = temp.add(&U2048(temp2));
+            }
+            res = res.add(&temp); // panics on overflow
+        }
+        res
+    }
+
+    fn modulo(&self, rhs: &U2048) -> Self {
+        let lhs = self;
+        let original = rhs;
+        let mut rhs = U2048::from_u8(0);
+        let mut next = rhs.add(&rhs);
+        while next.0 <= lhs.0 {
+            rhs = next;
+            next = next.add(original);
+        }
+        lhs.sub(&rhs)
+    }
+
+    fn mul_mod(&self, rhs: &U2048, p: &U2048) -> Self {
+        self.mul(rhs).modulo(p)
+    }
+
+    fn pow_mod(&self, pow: &U2048, p: &U2048) -> Self {
+        let mut res = U2048::from_u8(1);
+        let mut counter = *pow;
+        while counter.0 != [0u8; Self::SIZE] {
+            counter = counter.sub(&U2048::from_u8(1));
+            res = res.mul_mod(&res, p);
+        }
+        res
+    }
+
+    fn sub(&self, rhs: &U2048) -> Self {
+        let mut lhs = self.0;
+        for i in (0..Self::SIZE).rev() {
+            let a = if i > 0 {
+                ((lhs[i - 1] as u16) << 8) + lhs[i] as u16
+            } else {
+                lhs[i] as u16
+            };
+            let b = rhs.0[i] as u16;
+            let c = a - b; // will panic if underflow
+            lhs[i] = (c & 0xFF) as u8;
+            if i > 0 {
+                lhs[i - 1] = (c >> 8) as u8;
+            }
+        }
+        Self(lhs)
+    }
+
+    fn add(&self, rhs: &U2048) -> Self {
+        let mut lhs = self.0;
+        let mut carry = 0;
+        for i in (0..(Self::SIZE)).rev() {
+            let a = lhs[i] as u16;
+            let b = rhs.0[i] as u16;
+            let c = a + b + carry as u16;
+            carry = (c >> 8) as u8;
+            lhs[i] = (c & 0xFF) as u8;
+        }
+        if carry > 0 {
+            panic!()
+        } // overflow
+        Self(lhs)
+    }
+
+    fn from_be_hex(hex_string: &str) -> Self {
+        assert!(hex_string.len() % 2 == 0);
+        assert!(hex_string.len() <= 512);
+        let mut bytes = [0u8; Self::SIZE];
+        let n_bytes = hex_string.len() / 2;
+        hex::decode_to_slice(hex_string, &mut bytes[(Self::SIZE - n_bytes)..]).unwrap();
+        Self(bytes)
+    }
+
+    fn from_u8(num: u8) -> Self {
+        let mut bytes = [0u8; Self::SIZE];
+        *bytes.last_mut().unwrap() = num;
+        Self(bytes)
+    }
+
+    fn from_u64(num: u64) -> Self {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[(Self::SIZE - 8)..].clone_from_slice(&num.to_be_bytes());
+        Self(bytes)
+    }
+
+    fn from_slice(slice: &[u8]) -> Self {
+        assert!(slice.len() < Self::SIZE);
+        let mut bytes = [0u8; Self::SIZE];
+        let n_bytes = slice.len();
+        bytes[(Self::SIZE - n_bytes)..].clone_from_slice(slice);
+        Self(bytes)
+    }
+
+    fn rand() -> Self {
+        let mut bytes = [0u8; Self::SIZE];
+        thread_rng().fill_bytes(&mut bytes);
+        Self(bytes)
+    }
+
+    fn rand_below(num: &U2048) -> Self {
+        let n_bytes = num.0.iter().filter(|x| **x > 0).count();
+        let mut bytes = [0u8; Self::SIZE];
+        thread_rng().fill_bytes(&mut bytes[(Self::SIZE - n_bytes)..]);
+        while bytes >= num.0 {
+            thread_rng().fill_bytes(&mut bytes[(Self::SIZE - n_bytes)..]);
+        }
+        Self(bytes)
+    }
+    fn as_slice(&self) -> [u8; Self::SIZE] {
+        self.0
+    }
+}
+
+#[test]
+fn test_u2048_simple() {
+    let a = U2048::from_u8(8);
+    let b = U2048::from_u8(128);
+    assert_eq!(a.mul(&b), U2048::from_u64(1024));
+    assert_eq!(b.modulo(&a), U2048::from_u8(0));
+}
+
+#[test]
+fn test_u2048_with_dh() {
+    // p, g, a, b
+    let p = U2048::from_u8(37);
+    let g = U2048::from_u8(2);
+    let a = U2048::rand_below(&p);
+    let b = U2048::rand_below(&p);
+    // test you get the same secret
+    let pka = g.pow_mod(&a, &p);
+    let pkb = g.pow_mod(&b, &p);
+    let ska = pka.pow_mod(&b, &p);
+    let skb = pkb.pow_mod(&a, &p);
+    assert_eq!(ska, skb);
+    // test you can get the same key
+    // and encrypt and decrypt messages
+}
+
 // Challenge 32
 
 fn less_insecure_compare(a: &[u8], b: &[u8]) -> bool {
@@ -259,8 +433,7 @@ async fn test_artificial_timing_attack() {
         assert_eq!(response.status(), *expected_status);
     }
 
-    let got =
-        artificial_timing_attack(&rand_file, |file, sig| send_request(port, file, sig)).await;
+    let got = artificial_timing_attack(&rand_file, |file, sig| send_request(port, file, sig)).await;
     assert_eq!(got, expected);
 }
 
