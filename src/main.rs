@@ -59,6 +59,223 @@ fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
+// Challenge 34
+
+#[test]
+fn test_dh_interfaces() {
+    let mut a = DHBasic::new();
+    let mut b = DHBasic::new();
+    a.send_dh_start(&mut b);
+    b.send_dh_pk(&mut a);
+    let plaintext = pkcs7_pad(&get_random_utf8(), BLOCK_SIZE);
+    let iv = generate_key();
+    let ciphertext_a = a.encrypt(&plaintext, &iv);
+    assert_eq!(plaintext, b.decrypt(&ciphertext_a, &iv));
+    let ciphertext_b = b.encrypt(&plaintext, &iv);
+    assert_eq!(plaintext, a.decrypt(&ciphertext_b, &iv));
+}
+
+#[test]
+fn test_dh_mitm_param_injection() {
+    let mut a = DHBasic::new();
+    let mut b = DHBasic::new();
+    let mut mitm = DHMitm::new();
+
+    a.send_dh_start(&mut mitm.dh_a);
+    mitm.dh_b.p = mitm.dh_a.p.clone();
+    mitm.dh_b.send_dh_start(&mut b);
+    b.send_dh_pk(&mut mitm.dh_b);
+    mitm.dh_a.send_dh_pk(&mut a);
+
+    let plaintext_a = pkcs7_pad(&get_random_utf8(), BLOCK_SIZE);
+    let iv = generate_key();
+    let ciphertext_a = a.encrypt(&plaintext_a, &iv);
+    let mitm_plaintext_a = mitm.dh_a.decrypt(&ciphertext_a, &iv);
+    assert_eq!(plaintext_a, mitm_plaintext_a);
+
+    let plaintext_b = ciphertext_a;
+    let iv = generate_key();
+    let ciphertext_b = b.encrypt(&plaintext_b, &iv);
+    let mitm_plaintext_b = mitm.dh_b.decrypt(&ciphertext_b, &iv);
+    assert_eq!(plaintext_b, mitm_plaintext_b);
+}
+
+trait DHAesCbc {
+    fn encrypt(&self, plaintext: &[u8], iv: &[u8; 16]) -> Vec<u8>;
+    fn decrypt(&self, ciphertext: &[u8], iv: &[u8; 16]) -> Vec<u8>;
+}
+
+trait DHActor {
+    fn send_dh_pk(&self, counterparty: &mut impl DHActor);
+    fn receive_dh_pk(&mut self, their_pk: &BigUint);
+    fn send_dh_start(&mut self, counterparty: &mut impl DHActor);
+    fn receive_dh_start(&mut self, p: &BigUint, g: &BigUint, their_pk: &BigUint);
+}
+
+struct DHBasic {
+    g: BigUint,
+    p: BigUint,
+    secret: BigUint,
+    shared_secret: Option<BigUint>,
+    aes_key: Option<[u8; 16]>,
+}
+
+impl DHAesCbc for DHBasic {
+    fn encrypt(&self, plaintext: &[u8], iv: &[u8; 16]) -> Vec<u8> {
+        aes_cbc_encrypt(plaintext, &self.aes_key.expect("Should not call encrypt before creating aes_key"), iv)
+    }
+    
+    fn decrypt(&self, ciphertext: &[u8], iv: &[u8; 16]) -> Vec<u8> {
+        aes_cbc_decrypt(ciphertext, &self.aes_key.expect("Should not call decrypt before creating aes_key"), iv)
+    }
+}
+
+impl DHBasic {
+    fn new() -> Self {
+        let g = 2.to_biguint().unwrap();
+        let p = BigUint::parse_bytes(b"ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff", 16).unwrap();
+        let secret = generate_dh_secret(&p);
+        Self::new_from(&g, &p, &secret)
+    }
+
+    fn new_from(g: &BigUint, p: &BigUint, secret: &BigUint) -> Self {
+        Self {
+            g: g.clone(),
+            p: p.clone(),
+            secret: secret.clone(),
+            shared_secret: None,
+            aes_key: None,
+        }
+    }
+
+    fn new_from_other(g: &BigUint, p: &BigUint, their_pk: &BigUint) -> Self {
+        let secret = generate_dh_secret(p);
+        Self::new_from_other_with_secret(g, p, their_pk, &secret)
+    }
+
+    fn new_from_other_with_secret(
+        g: &BigUint,
+        p: &BigUint,
+        their_pk: &BigUint,
+        secret: &BigUint,
+    ) -> Self {
+        let mut me = Self::new_from(g, p, &secret);
+        me.receive_dh_pk(their_pk);
+        me
+    }
+
+    fn public_key(&self) -> BigUint {
+        self.g.modpow(&self.secret, &self.p)
+    }
+}
+
+impl DHActor for DHBasic {
+    fn send_dh_pk(&self, counterparty: &mut impl DHActor) {
+        counterparty.receive_dh_pk(&self.public_key());
+    }
+
+    fn receive_dh_pk(&mut self, their_pk: &BigUint) {
+        let shared_secret = their_pk.modpow(&self.secret, &self.p);
+        self.aes_key = Some(aes_key_from_dh_shared_secret(&shared_secret));
+        self.shared_secret = Some(shared_secret);
+    }
+    fn send_dh_start(&mut self, counterparty: &mut impl DHActor) {
+        counterparty.receive_dh_start(&self.p, &self.g, &self.public_key());
+    }
+
+    fn receive_dh_start(&mut self, p: &BigUint, g: &BigUint, their_pk: &BigUint) {
+        *self = Self::new_from_other(g, p, their_pk);
+    }
+}
+
+struct DHEvil {
+    g: BigUint,
+    p: BigUint,
+    shared_secret: Option<BigUint>,
+    aes_key: Option<[u8; 16]>,
+}
+
+impl DHEvil {
+    fn new() -> Self {
+        let g = 2.to_biguint().unwrap();
+        let p = BigUint::parse_bytes(b"ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff", 16).unwrap();
+        Self {
+            g,
+            p,
+            shared_secret: None,
+            aes_key: None,
+        }
+    }
+}
+
+impl DHAesCbc for DHEvil {
+    fn encrypt(&self, plaintext: &[u8], iv: &[u8; 16]) -> Vec<u8> {
+        aes_cbc_encrypt(plaintext, &self.aes_key.expect("Should not call encrypt before creating aes_key"), iv)
+    }
+    fn decrypt(&self, ciphertext: &[u8], iv: &[u8; 16]) -> Vec<u8> {
+        aes_cbc_decrypt(ciphertext, &self.aes_key.expect("Should not call decrypt before creating aes_key"), iv)
+    }
+}
+
+impl DHActor for DHEvil {
+    fn send_dh_pk(&self, counterparty: &mut impl DHActor) {
+        counterparty.receive_dh_pk(&self.p);
+    }
+
+    fn receive_dh_pk(&mut self, their_pk: &BigUint) {
+        let shared_secret = 0.to_biguint().unwrap();
+        self.aes_key = Some(aes_key_from_dh_shared_secret(&shared_secret));
+        self.shared_secret = Some(shared_secret);
+    }
+
+    fn send_dh_start(&mut self, counterparty: &mut impl DHActor) {
+        counterparty.receive_dh_start(&self.p, &self.g, &self.p);
+    }
+
+    fn receive_dh_start(&mut self, p: &BigUint, g: &BigUint, their_pk: &BigUint) {
+        self.g = g.clone();
+        self.p = p.clone();
+        self.receive_dh_pk(their_pk)
+    }
+}
+
+struct DHMitm {
+    g: BigUint,
+    p: BigUint,
+    dh_a: DHEvil,
+    dh_b: DHEvil,
+}
+
+impl DHMitm {
+    fn new() -> Self {
+        // init dummy before getting first message
+        let dh_a = DHEvil::new();
+        let dh_b = DHEvil::new();
+        Self {
+            g: dh_a.g.clone(),
+            p: dh_a.p.clone(),
+            dh_a,
+            dh_b,
+        }
+    }
+}
+
+fn aes_key_from_dh_shared_secret(shared_secret: &BigUint) -> [u8; 16] {
+    let digest = sha1(&shared_secret.to_bytes_be().as_slice());
+    let aes_key: [u8; 16] = digest[0..BLOCK_SIZE].try_into().unwrap();
+    aes_key
+}
+
+fn aes_key_from_dh(my_sk: &BigUint, their_pk: &BigUint, p: &BigUint) -> [u8; 16] {
+    let shared_sk = their_pk.modpow(my_sk, p);
+    aes_key_from_dh_shared_secret(&shared_sk)
+}
+
+fn generate_dh_secret(p: &BigUint) -> BigUint {
+    let (low, high) = (1.to_biguint().unwrap() << 512, p.clone());
+    thread_rng().gen_biguint_range(&low, &high)
+}
+
 // Challenge 33
 
 fn do_test_basic_dh(p: &BigUint, g: &BigUint, a: &BigUint, b: &BigUint) {
@@ -80,9 +297,8 @@ fn test_basic_dh() {
 
     let p = BigUint::parse_bytes(b"ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff", 16).unwrap();
     let g = 2.to_biguint().unwrap();
-    let (low, high) = (1.to_biguint().unwrap() << 1023, p.clone());
-    let a = thread_rng().gen_biguint_range(&low, &high);
-    let b = thread_rng().gen_biguint_range(&low, &high);
+    let a = generate_dh_secret(&p);
+    let b = generate_dh_secret(&p);
     do_test_basic_dh(&p, &g, &a, &b);
 }
 
