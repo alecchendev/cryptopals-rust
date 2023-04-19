@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io::prelude::*;
-use std::ops::Range;
+use std::ops::{Range, Sub};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -59,6 +59,57 @@ fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
+// Challenge 35
+
+#[test]
+fn test_dh_g_equal_p_minus_one() {
+    let mut a = DHBasic::new();
+    let mut b = DHBasic::new();
+    a.g = a.p.clone().sub(1.to_biguint().unwrap());
+
+    a.send_dh_start(&mut b);
+    b.send_dh_pk(&mut a);
+
+    let one = 1.to_biguint().unwrap();
+    let fixed_secret = if a.public_key() != one && b.public_key() != one { a.public_key() } else { one };
+
+    assert_eq!(a.shared_secret, b.shared_secret);
+    assert_eq!(a.shared_secret.clone().unwrap(), fixed_secret.clone());
+}
+
+#[test]
+fn test_dh_g_equal_p() {
+    let mut a = DHBasic::new();
+    let mut b = DHBasic::new();
+    // fix g...somehow?
+    let fixed_secret = 0.to_biguint().unwrap();
+    a.g = a.p.clone();
+    let mut mitm = DHMitm::new(&fixed_secret.clone());
+
+    a.send_dh_start(&mut mitm.dh_a);
+    b.receive_dh_start(&mitm.dh_a.p, &mitm.dh_a.g, &a.public_key());
+    a.receive_dh_pk(&a.public_key()); // public key doesn't matter
+
+    assert_eq!(a.shared_secret, b.shared_secret);
+    assert_eq!(a.shared_secret.clone().unwrap(), fixed_secret.clone());
+}
+
+#[test]
+fn test_dh_g_equal_one() {
+    let mut a = DHBasic::new();
+    let mut b = DHBasic::new();
+    // fix g...somehow?
+    a.g = 1.to_biguint().unwrap();
+    let mut mitm = DHMitm::new(&1.to_biguint().unwrap());
+
+    a.send_dh_start(&mut mitm.dh_a);
+    b.receive_dh_start(&mitm.dh_a.p, &mitm.dh_a.g, &a.public_key());
+    a.receive_dh_pk(&a.public_key()); // public key doesn't matter
+
+    assert_eq!(a.shared_secret, b.shared_secret);
+    assert_eq!(a.shared_secret.clone().unwrap(), 1.to_biguint().unwrap());
+}
+
 // Challenge 34
 
 #[test]
@@ -79,13 +130,14 @@ fn test_dh_interfaces() {
 fn test_dh_mitm_param_injection() {
     let mut a = DHBasic::new();
     let mut b = DHBasic::new();
-    let mut mitm = DHMitm::new();
+    let mut mitm = DHMitm::new(&0.to_biguint().unwrap());
 
     a.send_dh_start(&mut mitm.dh_a);
     mitm.dh_b.p = mitm.dh_a.p.clone();
-    mitm.dh_b.send_dh_start(&mut b);
+    b.receive_dh_start(&mitm.dh_b.p, &mitm.dh_b.g, &mitm.dh_b.p);
     b.send_dh_pk(&mut mitm.dh_b);
     mitm.dh_a.send_dh_pk(&mut a);
+    a.receive_dh_pk(&mitm.dh_a.p);
 
     let plaintext_a = pkcs7_pad(&get_random_utf8(), BLOCK_SIZE);
     let iv = generate_key();
@@ -188,49 +240,41 @@ impl DHActor for DHBasic {
     }
 }
 
-struct DHEvil {
+struct DHFixedKey {
     g: BigUint,
     p: BigUint,
-    shared_secret: Option<BigUint>,
-    aes_key: Option<[u8; 16]>,
+    shared_secret: BigUint,
+    aes_key: [u8; 16],
 }
 
-impl DHEvil {
-    fn new() -> Self {
+impl DHFixedKey {
+    fn new(shared_secret: &BigUint) -> Self {
         let g = 2.to_biguint().unwrap();
         let p = BigUint::parse_bytes(b"ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff", 16).unwrap();
         Self {
             g,
             p,
-            shared_secret: None,
-            aes_key: None,
+            shared_secret: shared_secret.clone(),
+            aes_key: aes_key_from_dh_shared_secret(shared_secret),
         }
     }
 }
 
-impl DHAesCbc for DHEvil {
+impl DHAesCbc for DHFixedKey {
     fn encrypt(&self, plaintext: &[u8], iv: &[u8; 16]) -> Vec<u8> {
-        aes_cbc_encrypt(plaintext, &self.aes_key.expect("Should not call encrypt before creating aes_key"), iv)
+        aes_cbc_encrypt(plaintext, &self.aes_key, iv)
     }
     fn decrypt(&self, ciphertext: &[u8], iv: &[u8; 16]) -> Vec<u8> {
-        aes_cbc_decrypt(ciphertext, &self.aes_key.expect("Should not call decrypt before creating aes_key"), iv)
+        aes_cbc_decrypt(ciphertext, &self.aes_key, iv)
     }
 }
 
-impl DHActor for DHEvil {
-    fn send_dh_pk(&self, counterparty: &mut impl DHActor) {
-        counterparty.receive_dh_pk(&self.p);
-    }
+impl DHActor for DHFixedKey {
+    fn send_dh_pk(&self, counterparty: &mut impl DHActor) {}
 
-    fn receive_dh_pk(&mut self, their_pk: &BigUint) {
-        let shared_secret = 0.to_biguint().unwrap();
-        self.aes_key = Some(aes_key_from_dh_shared_secret(&shared_secret));
-        self.shared_secret = Some(shared_secret);
-    }
+    fn receive_dh_pk(&mut self, _their_pk: &BigUint) {}
 
-    fn send_dh_start(&mut self, counterparty: &mut impl DHActor) {
-        counterparty.receive_dh_start(&self.p, &self.g, &self.p);
-    }
+    fn send_dh_start(&mut self, counterparty: &mut impl DHActor) {}
 
     fn receive_dh_start(&mut self, p: &BigUint, g: &BigUint, their_pk: &BigUint) {
         self.g = g.clone();
@@ -242,15 +286,15 @@ impl DHActor for DHEvil {
 struct DHMitm {
     g: BigUint,
     p: BigUint,
-    dh_a: DHEvil,
-    dh_b: DHEvil,
+    dh_a: DHFixedKey,
+    dh_b: DHFixedKey,
 }
 
 impl DHMitm {
-    fn new() -> Self {
+    fn new(key: &BigUint) -> Self {
         // init dummy before getting first message
-        let dh_a = DHEvil::new();
-        let dh_b = DHEvil::new();
+        let dh_a = DHFixedKey::new(key);
+        let dh_b = DHFixedKey::new(key);
         Self {
             g: dh_a.g.clone(),
             p: dh_a.p.clone(),
