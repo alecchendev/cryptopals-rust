@@ -59,6 +59,95 @@ fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
+// Challenge 38
+
+struct SrpMitm {
+    n: BigUint,
+    g: BigUint,
+    k: BigUint,
+    salt: BigUint,
+    sk: BigUint,
+    pk: BigUint,
+    u: BigUint,
+    passwords_filename: String,
+    client_pk: Option<BigUint>,
+}
+
+impl SrpMitm {
+    fn new(n: BigUint, g: BigUint, k: BigUint, passwords_filename: String) -> Self {
+        let sk = thread_rng().gen_biguint_below(&n);
+        let pk = g.modpow(&sk, &n);
+        Self {
+            n,
+            g,
+            k,
+            salt: thread_rng().gen_biguint(256),
+            sk,
+            pk,
+            u: thread_rng().gen_biguint(128),
+            passwords_filename,
+            client_pk: None
+        }
+    }
+
+    fn establish_shared_secret(&mut self, pk: &BigUint) -> Result<(BigUint, BigUint, BigUint), ()> {
+        self.client_pk = Some(pk.clone());
+        Ok((self.salt.clone(), self.pk.clone(), self.u.clone()))
+    }
+
+    fn crack_password(&self, client_hmac: &[u8; 32]) -> Result<String, ()> {
+        let mut file = fs::File::open(self.passwords_filename.to_string()).unwrap();
+        let mut file_contents = String::new();
+        file.read_to_string(&mut file_contents).unwrap();
+        for password in file_contents.lines() {
+            let v = server_v(&self.salt, password.as_bytes(), &self.n, &self.g);
+            let client_pk = match self.client_pk {
+                None => return Err(()),
+                Some(ref pk) => pk.clone(),
+            };
+            let s = (client_pk * v.modpow(&self.u, &self.n)).modpow(&self.sk, &self.n);
+            let k = sha2(&s.to_bytes_be());
+            let hmac = hmac_sha2(&k, &self.salt.to_bytes_be());
+            if &hmac == client_hmac {
+                return Ok(password.to_string());
+            }
+        }
+        Err(())
+    }
+}
+
+#[test]
+fn test_offline_dictionary_attack_simplified_srp() {
+    let passwords_filename = "data/passwords.txt";
+    let (client, mut mitm) = init_srp_client_mitm(passwords_filename);
+
+    let (salt, server_pk, u) = mitm.establish_shared_secret(&client.public_key()).unwrap();
+    let client_hmac = client.generate_hmac_simplified(&salt, &server_pk, &u);
+    let cracked_password = mitm.crack_password(&client_hmac).unwrap();
+    assert_eq!(cracked_password, client.password().to_string());
+}
+
+fn get_random_password(filename: &str) -> String {
+    let mut file = fs::File::open(filename).unwrap();
+    let mut file_contents = String::new();
+    file.read_to_string(&mut file_contents).unwrap();
+    let passwords = file_contents.lines().collect::<Vec<&str>>();
+    let idx = thread_rng().gen_range(0..passwords.len());
+    passwords[idx].to_string()
+}
+
+fn init_srp_client_mitm(passwords_filename: &str) -> (SrpClient, SrpMitm) {
+    let (n, g, k) = n_g_k();
+    let email = String::from("alice@email.com");
+    let password = String::from_utf8(get_random_utf8()).unwrap();
+
+    let mut client = SrpClient::new(n.clone(), g.clone(), k.clone(), email.clone(), password.clone());
+    client.password = get_random_password(passwords_filename);
+    let mitm = SrpMitm::new(n.clone(), g.clone(), k.clone(), passwords_filename.to_string());
+    (client, mitm)
+
+}
+
 // Challenge 37
 
 fn do_test_break_srp_with_zero_key(public_key: &BigUint) {
@@ -78,15 +167,17 @@ fn test_break_srp_with_zero_key() {
 }
 
 fn init_srp_client_server() -> (SrpClient, SrpServer) {
-    let n = big_prime();
-    let g = 2.to_biguint().unwrap();
-    let k = 3.to_biguint().unwrap();
+    let (n, g, k) = n_g_k();
     let email = String::from("alice@email.com");
     let password = String::from_utf8(get_random_utf8()).unwrap();
 
     let client = SrpClient::new(n.clone(), g.clone(), k.clone(), email.clone(), password.clone());
     let server = SrpServer::new(&n, &g, &k);
     (client, server)
+}
+
+fn n_g_k() -> (BigUint, BigUint, BigUint) {
+    (big_prime(), 2.to_biguint().unwrap(), 3.to_biguint().unwrap())
 }
 
 // Challenge 36
@@ -139,6 +230,14 @@ impl SrpClient {
         let k = sha2(&0.to_biguint().unwrap().to_bytes_be());
         hmac_sha2(&k, &salt.to_bytes_be())
     }
+
+    fn generate_hmac_simplified(&self, salt: &BigUint, pk: &BigUint, u: &BigUint) -> [u8; 32] {
+        let x_hash = sha2(&[&salt.to_bytes_be(), self.password.as_bytes()].concat());
+        let x = BigUint::from_bytes_be(&x_hash);
+        let s = pk.modpow(&(self.sk.clone() + u * x), &self.n);
+        let k = sha2(&s.to_bytes_be());
+        hmac_sha2(&k, &salt.to_bytes_be())
+    }
 }
 
 struct SrpUserInfo {
@@ -165,7 +264,8 @@ impl SrpServer {
     }
 
     fn register(&mut self, email: String, password: String) -> Result<(), ()> {
-        let (salt, v) = server_salt_and_v(password.as_bytes(), &self.n, &self.g);
+        let salt = thread_rng().gen_biguint(256);
+        let v = server_v(&salt, password.as_bytes(), &self.n, &self.g);
         if self.user_info.contains_key(&email) {
             Err(())
         } else {
@@ -208,13 +308,9 @@ impl SrpServer {
 #[test]
 fn test_srp() {
     let (client, mut server) = init_srp_client_server();
-
     assert!(server.register(client.email().to_string(), client.password().to_string()).is_ok());
-
     let (salt, server_pk) = server.establish_shared_secret(client.email(), &client.public_key()).unwrap();
-
     let client_hmac = client.generate_hmac(&salt, &server_pk);
-
     assert!(server.authenticate(client.email(), &client_hmac).is_ok());
 }
 
@@ -229,19 +325,18 @@ fn server_K(pk_a: &BigUint, v: &BigUint, u: &BigUint, n: &BigUint, sk_b: &BigUin
     sha2(&s.to_bytes_be())
 }
 
+fn server_v(salt: &BigUint, password: &[u8], n: &BigUint, g: &BigUint) -> BigUint {
+    let x_hash = sha2(&[&salt.to_bytes_be(), password].concat());
+    let x = BigUint::from_bytes_be(&x_hash);
+    g.modpow(&x, &n)
+}
+
 fn client_K(g: &BigUint, k: &BigUint, n: &BigUint, salt: &BigUint, password: &[u8], sk_a: &BigUint, u: &BigUint, pk_b: &BigUint) -> [u8; 32] {
     let x_hash = sha2(&[&salt.to_bytes_be(), password].concat());
     let x = BigUint::from_bytes_be(&x_hash);
-    let s = (pk_b - k * g.modpow(&x, &n)).modpow(&(sk_a + u * x), &n); // first modpow should be mod??
+    let v = server_v(salt, password, n, g);
+    let s = (pk_b - k * v).modpow(&(sk_a + u * x), &n);
     sha2(&s.to_bytes_be())
-}
-
-fn server_salt_and_v(password: &[u8], n: &BigUint, g: &BigUint) -> (BigUint, BigUint) {
-    let salt = thread_rng().gen_biguint(256);
-    let x_hash = sha2(&[&salt.to_bytes_be(), password].concat());
-    let x = BigUint::from_bytes_be(&x_hash);
-    let v = g.modpow(&x, &n);
-    (salt, v)
 }
 
 fn big_prime() -> BigUint {
