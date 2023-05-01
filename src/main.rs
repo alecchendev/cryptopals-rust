@@ -61,46 +61,110 @@ const BLOCK_SIZE: usize = 16;
 
 // Challenge 36
 
+struct SrpClient {
+    n: BigUint,
+    g: BigUint,
+    k: BigUint,
+    email: String,
+    password: String,
+    hmac: [u8; 32],
+}
+
+struct SrpUserInfo {
+    salt: BigUint,
+    v: BigUint,
+    hmac: Option<[u8; 32]>,
+}
+
+struct SrpServer {
+    n: BigUint,
+    g: BigUint,
+    k: BigUint,
+    user_info: HashMap<String, SrpUserInfo>,
+}
+
+impl SrpServer {
+    fn new(n: &BigUint, g: &BigUint, k: &BigUint) -> Self {
+        Self {
+            n: n.clone(),
+            g: g.clone(),
+            k: k.clone(),
+            user_info: HashMap::new(),
+        }
+    }
+
+    fn register(&mut self, email: String, password: String) -> Result<(), ()> {
+        let (salt, v) = server_salt_and_v(password.as_bytes(), &self.n, &self.g);
+        if self.user_info.contains_key(&email) {
+            Err(())
+        } else {
+            self.user_info.insert(email, SrpUserInfo { salt, v, hmac: None });
+            Ok(())
+        }
+}
+
+    fn establish_shared_secret(&mut self, email: &str, pk: &BigUint) -> Result<(BigUint, BigUint), ()> {
+        let user_info = match self.user_info.get_mut(email) {
+            None => return Err(()),
+            Some(info) => info,
+        };
+        let (sk_b, pk_b) = server_sk_pk(&self.n, &self.k, &user_info.v, &self.g);
+        let u_hash = sha2(&[pk.to_bytes_be(), pk_b.to_bytes_be()].concat());
+        let u = BigUint::from_bytes_be(&u_hash);
+        let k = server_K(&pk, &user_info.v, &u, &self.n, &sk_b);
+        let hmac = hmac_sha2(&k, &user_info.salt.to_bytes_be());
+        user_info.hmac = Some(hmac);
+        Ok((user_info.salt.clone(), pk_b))
+    }
+
+    fn authenticate(&self, email: &str, hmac: &[u8; 32]) -> Result<(), ()> {
+        let info = match self.user_info.get(email) {
+            None => return Err(()),
+            Some(info) => info,
+        };
+        let expected_hmac = match info.hmac {
+            None => return Err(()),
+            Some(hmac) => hmac,
+        };
+        if hmac == &expected_hmac {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
 #[test]
 fn test_srp() {
     // C & S
     let n = big_prime();
     let g = 2.to_biguint().unwrap();
     let k = 3.to_biguint().unwrap();
-    let email = b"alice_client@email.com";
+    let email = String::from("alice_client@email.com");
     let password = get_random_utf8();
-    let password = password.as_slice();
 
-    // S
-    let (salt, v) = server_salt_and_v(&password, &n, &g);
+    let mut server = SrpServer::new(&n, &g, &k);
+    assert!(server.register(email.clone(), String::from_utf8(password.clone()).unwrap()).is_ok());
 
     // C->S
     let sk_a = thread_rng().gen_biguint_below(&n);
     let pk_a = g.modpow(&sk_a, &n);
+
     // send I, A
+    let (salt, pk_b) = server.establish_shared_secret(&email, &pk_a).unwrap();
 
-    // S->C
-    let (sk_b, pk_b) = server_sk_pk(&n, &k, &v, &g);
-    // send salt, B
-
-    // S,C
+    // C
     let u_hash = sha2(&[pk_a.to_bytes_be(), pk_b.to_bytes_be()].concat());
     let u = BigUint::from_bytes_be(&u_hash);
 
     // C
     let client_k = client_K(&g, &k, &n, &salt, &password, &sk_a, &u, &pk_b);
 
-    // S
-    let server_k = server_K(&pk_a, &v, &u, &n, &sk_b);
-
     // C->S
     let client_hmac_k_salt = hmac_sha2(&client_k, &salt.to_bytes_be());
-    // send hmac
 
     // S->C
-    let server_hmac_k_salt = hmac_sha2(&server_k, &salt.to_bytes_be());
-    // send OK if matches
-    assert_eq!(client_hmac_k_salt, server_hmac_k_salt);
+    assert!(server.authenticate(&email, &client_hmac_k_salt).is_ok());
 
 }
 
