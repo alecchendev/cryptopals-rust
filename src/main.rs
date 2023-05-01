@@ -61,6 +61,75 @@ const BLOCK_SIZE: usize = 16;
 
 // Challenge 36
 
+#[test]
+fn test_srp() {
+    // C & S
+    let n = big_prime();
+    let g = 2.to_biguint().unwrap();
+    let k = 3.to_biguint().unwrap();
+    let email = b"alice_client@email.com";
+    let password = get_random_utf8();
+    let password = password.as_slice();
+
+    // S
+    let (salt, v) = server_salt_and_v(&password, &n, &g);
+
+    // C->S
+    let sk_a = thread_rng().gen_biguint_below(&n);
+    let pk_a = g.modpow(&sk_a, &n);
+    // send I, A
+
+    // S->C
+    let (sk_b, pk_b) = server_sk_pk(&n, &k, &v, &g);
+    // send salt, B
+
+    // S,C
+    let u_hash = sha2(&[pk_a.to_bytes_be(), pk_b.to_bytes_be()].concat());
+    let u = BigUint::from_bytes_be(&u_hash);
+
+    // C
+    let client_k = client_K(&g, &k, &n, &salt, &password, &sk_a, &u, &pk_b);
+
+    // S
+    let server_k = server_K(&pk_a, &v, &u, &n, &sk_b);
+
+    // C->S
+    let client_hmac_k_salt = hmac_sha2(&client_k, &salt.to_bytes_be());
+    // send hmac
+
+    // S->C
+    let server_hmac_k_salt = hmac_sha2(&server_k, &salt.to_bytes_be());
+    // send OK if matches
+    assert_eq!(client_hmac_k_salt, server_hmac_k_salt);
+
+}
+
+fn server_sk_pk(n: &BigUint, k: &BigUint, v: &BigUint, g: &BigUint) -> (BigUint, BigUint) {
+    let sk_b = thread_rng().gen_biguint_below(&n);
+    let pk_b = k * v + g.modpow(&sk_b, &n);
+    (sk_b, pk_b)
+}
+
+fn server_K(pk_a: &BigUint, v: &BigUint, u: &BigUint, n: &BigUint, sk_b: &BigUint) -> [u8; 32] {
+    let s = (pk_a * v.modpow(&u, &n)).modpow(&sk_b, &n);
+    sha2(&s.to_bytes_be())
+}
+
+fn client_K(g: &BigUint, k: &BigUint, n: &BigUint, salt: &BigUint, password: &[u8], sk_a: &BigUint, u: &BigUint, pk_b: &BigUint) -> [u8; 32] {
+    let x_hash = sha2(&[&salt.to_bytes_be(), password].concat());
+    let x = BigUint::from_bytes_be(&x_hash);
+    let s = (pk_b - k * g.modpow(&x, &n)).modpow(&(sk_a + u * x), &n); // first modpow should be mod??
+    sha2(&s.to_bytes_be())
+}
+
+fn server_salt_and_v(password: &[u8], n: &BigUint, g: &BigUint) -> (BigUint, BigUint) {
+    let salt = thread_rng().gen_biguint(256);
+    let x_hash = sha2(&[&salt.to_bytes_be(), password].concat());
+    let x = BigUint::from_bytes_be(&x_hash);
+    let v = g.modpow(&x, &n);
+    (salt, v)
+}
+
 fn big_prime() -> BigUint {
     BigUint::parse_bytes(b"ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff", 16).unwrap()
 }
