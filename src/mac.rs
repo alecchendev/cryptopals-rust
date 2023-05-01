@@ -1,10 +1,22 @@
 use rand::{thread_rng, Rng};
+use sha2::{Sha256, Digest};
 
-// Challenge 31
+// Challenge 36
 
-pub fn sha1_hmac_sign(mut key: &[u8], message: &[u8]) -> [u8; DIGEST_LENGTH_SHA1] {
+pub fn sha2(data: &[u8]) -> [u8; 32] {
+    // let mut hasher = Sha25
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().try_into().unwrap()
+}
+
+pub fn hmac_sha2(key: &[u8], message: &[u8]) -> [u8; 32] {
+    hmac(key, message, |message| sha2(message).to_vec()).try_into().unwrap()
+}
+
+fn hmac<F>(key: &[u8], message: &[u8], hash: F) -> Vec<u8> where F: Fn(&[u8]) -> Vec<u8> {
     let block_size = 64;
-    let compressed_key = sha1(key);
+    let compressed_key = hash(key);
     let key = if key.len() > block_size {
         &compressed_key
     } else {
@@ -22,16 +34,22 @@ pub fn sha1_hmac_sign(mut key: &[u8], message: &[u8]) -> [u8; DIGEST_LENGTH_SHA1
         .zip(key.iter())
         .for_each(|(byte, key_byte)| *byte ^= key_byte);
 
-    let hash_1 = sha1(&[&inner_pad, message].concat());
-    let hash_2 = sha1(&[&outer_pad, &hash_1[..]].concat());
+    let hash_1 = hash(&[&inner_pad, message].concat());
+    let hash_2 = hash(&[&outer_pad, &hash_1[..]].concat());
 
     hash_2
+}
+
+// Challenge 31
+
+pub fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; DIGEST_LENGTH_SHA1] {
+    hmac(key, message, |message| sha1(message).to_vec()).try_into().unwrap()
 }
 
 #[test]
 fn test_sha1_hmac() {
     let expected = hex::decode("de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9").unwrap();
-    let got = sha1_hmac_sign(b"key", b"The quick brown fox jumps over the lazy dog");
+    let got = hmac_sha1(b"key", b"The quick brown fox jumps over the lazy dog");
     assert_eq!(got, &expected[..]);
 }
 

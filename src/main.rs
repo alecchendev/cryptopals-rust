@@ -35,8 +35,8 @@ use block::{
 };
 use mac::{
     digest_to_state, md4_digest_to_state, md4_from_state, md4_mac_sign, md4_mac_verify, md4_pad,
-    sha1, sha1_from_state, sha1_hmac_sign, sha1_mac_sign, sha1_mac_verify, sha1_pad,
-    DIGEST_LENGTH_MD4, DIGEST_LENGTH_SHA1,
+    sha1, sha1_from_state, hmac_sha1, sha1_mac_sign, sha1_mac_verify, sha1_pad,
+    DIGEST_LENGTH_MD4, DIGEST_LENGTH_SHA1, sha2, hmac_sha2
 };
 use oracle::{
     encrypt_oracle, parse_key_value, AesCbcOracle, AesCbcOracleKeyAsIv, AesCtrOracle,
@@ -417,7 +417,7 @@ async fn test_less_artificial_timing_attack() {
     let test_data = [
         (
             "foo",
-            hex::encode(sha1_hmac_sign(&key, "foo".as_bytes())),
+            hex::encode(hmac_sha1(&key, "foo".as_bytes())),
             StatusCode::OK,
         ),
         (
@@ -427,7 +427,7 @@ async fn test_less_artificial_timing_attack() {
         ),
     ];
     let rand_file = get_random_utf8();
-    let expected = sha1_hmac_sign(&key, rand_file.as_slice());
+    let expected = hmac_sha1(&key, rand_file.as_slice());
 
     start_server(port, Arc::new(key), less_insecure_compare);
 
@@ -462,7 +462,7 @@ where
             .map(move |map: HashMap<String, String>| {
                 let file = map.get("file").unwrap();
                 let signature = hex::decode(map.get("signature").unwrap()).unwrap();
-                let hmac = sha1_hmac_sign(&key, file.as_bytes());
+                let hmac = hmac_sha1(&key, file.as_bytes());
                 let valid_signature = compare(&signature, &hmac);
                 http::Response::builder()
                     .status(if valid_signature { 200 } else { 500 })
@@ -533,7 +533,7 @@ async fn test_artificial_timing_attack() {
     let test_data = [
         (
             "foo",
-            hex::encode(sha1_hmac_sign(&key, "foo".as_bytes())),
+            hex::encode(hmac_sha1(&key, "foo".as_bytes())),
             StatusCode::OK,
         ),
         (
@@ -543,7 +543,7 @@ async fn test_artificial_timing_attack() {
         ),
     ];
     let rand_file = get_random_utf8();
-    let expected = sha1_hmac_sign(&key, rand_file.as_slice());
+    let expected = hmac_sha1(&key, rand_file.as_slice());
 
     start_server(port, Arc::new(key), insecure_compare);
 
