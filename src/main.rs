@@ -59,6 +59,36 @@ fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
+// Challenge 37
+
+fn do_test_break_srp_with_zero_key(public_key: &BigUint) {
+    let (client, mut server) = init_srp_client_server();
+    assert!(server.register(client.email().to_string(), client.password().to_string()).is_ok());
+    let (salt, _server_pk) = server.establish_shared_secret(client.email(), public_key).unwrap();
+    let client_hmac = client.generate_zero_key_hmac(&salt);
+    assert!(server.authenticate(client.email(), &client_hmac).is_ok());
+}
+
+#[test]
+fn test_break_srp_with_zero_key() {
+    let n = big_prime();
+    do_test_break_srp_with_zero_key(&0.to_biguint().unwrap());
+    do_test_break_srp_with_zero_key(&(n.clone() * 1.to_biguint().unwrap()));
+    do_test_break_srp_with_zero_key(&(n * 2.to_biguint().unwrap()));
+}
+
+fn init_srp_client_server() -> (SrpClient, SrpServer) {
+    let n = big_prime();
+    let g = 2.to_biguint().unwrap();
+    let k = 3.to_biguint().unwrap();
+    let email = String::from("alice@email.com");
+    let password = String::from_utf8(get_random_utf8()).unwrap();
+
+    let client = SrpClient::new(n.clone(), g.clone(), k.clone(), email.clone(), password.clone());
+    let server = SrpServer::new(&n, &g, &k);
+    (client, server)
+}
+
 // Challenge 36
 
 struct SrpClient {
@@ -90,6 +120,10 @@ impl SrpClient {
         &self.email
     }
 
+    fn password(&self) -> &str {
+        &self.password
+    }
+
     fn public_key(&self) -> BigUint {
         self.pk.clone()
     }
@@ -98,6 +132,11 @@ impl SrpClient {
         let u_hash = sha2(&[self.pk.to_bytes_be(), pk.to_bytes_be()].concat());
         let u = BigUint::from_bytes_be(&u_hash);
         let k = client_K(&self.g, &self.k, &self.n, &salt, &self.password.as_bytes(), &self.sk, &u, &pk);
+        hmac_sha2(&k, &salt.to_bytes_be())
+    }
+
+    fn generate_zero_key_hmac(&self, salt: &BigUint) -> [u8; 32] {
+        let k = sha2(&0.to_biguint().unwrap().to_bytes_be());
         hmac_sha2(&k, &salt.to_bytes_be())
     }
 }
@@ -168,16 +207,9 @@ impl SrpServer {
 
 #[test]
 fn test_srp() {
-    let n = big_prime();
-    let g = 2.to_biguint().unwrap();
-    let k = 3.to_biguint().unwrap();
-    let email = String::from("alice@email.com");
-    let password = String::from_utf8(get_random_utf8()).unwrap();
+    let (client, mut server) = init_srp_client_server();
 
-    let client = SrpClient::new(n.clone(), g.clone(), k.clone(), email.clone(), password.clone());
-    let mut server = SrpServer::new(&n, &g, &k);
-
-    assert!(server.register(client.email().to_string(), password.clone()).is_ok());
+    assert!(server.register(client.email().to_string(), client.password().to_string()).is_ok());
 
     let (salt, server_pk) = server.establish_shared_secret(client.email(), &client.public_key()).unwrap();
 
