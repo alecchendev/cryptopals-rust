@@ -67,7 +67,39 @@ struct SrpClient {
     k: BigUint,
     email: String,
     password: String,
-    hmac: [u8; 32],
+    sk: BigUint,
+    pk: BigUint,
+}
+
+impl SrpClient {
+    fn new(n: BigUint, g: BigUint, k: BigUint, email: String, password: String) -> Self {
+        let sk = thread_rng().gen_biguint_below(&n);
+        let pk = g.modpow(&sk, &n);
+        Self {
+            n,
+            g,
+            k,
+            email,
+            password,
+            sk,
+            pk,
+        }
+    }
+
+    fn email(&self) -> &str {
+        &self.email
+    }
+
+    fn public_key(&self) -> BigUint {
+        self.pk.clone()
+    }
+
+    fn generate_hmac(&self, salt: &BigUint, pk: &BigUint) -> [u8; 32] {
+        let u_hash = sha2(&[self.pk.to_bytes_be(), pk.to_bytes_be()].concat());
+        let u = BigUint::from_bytes_be(&u_hash);
+        let k = client_K(&self.g, &self.k, &self.n, &salt, &self.password.as_bytes(), &self.sk, &u, &pk);
+        hmac_sha2(&k, &salt.to_bytes_be())
+    }
 }
 
 struct SrpUserInfo {
@@ -136,36 +168,22 @@ impl SrpServer {
 
 #[test]
 fn test_srp() {
-    // C & S
     let n = big_prime();
     let g = 2.to_biguint().unwrap();
     let k = 3.to_biguint().unwrap();
-    let email = String::from("alice_client@email.com");
-    let password = get_random_utf8();
+    let email = String::from("alice@email.com");
+    let password = String::from_utf8(get_random_utf8()).unwrap();
 
+    let client = SrpClient::new(n.clone(), g.clone(), k.clone(), email.clone(), password.clone());
     let mut server = SrpServer::new(&n, &g, &k);
-    assert!(server.register(email.clone(), String::from_utf8(password.clone()).unwrap()).is_ok());
 
-    // C->S
-    let sk_a = thread_rng().gen_biguint_below(&n);
-    let pk_a = g.modpow(&sk_a, &n);
+    assert!(server.register(client.email().to_string(), password.clone()).is_ok());
 
-    // send I, A
-    let (salt, pk_b) = server.establish_shared_secret(&email, &pk_a).unwrap();
+    let (salt, server_pk) = server.establish_shared_secret(client.email(), &client.public_key()).unwrap();
 
-    // C
-    let u_hash = sha2(&[pk_a.to_bytes_be(), pk_b.to_bytes_be()].concat());
-    let u = BigUint::from_bytes_be(&u_hash);
+    let client_hmac = client.generate_hmac(&salt, &server_pk);
 
-    // C
-    let client_k = client_K(&g, &k, &n, &salt, &password, &sk_a, &u, &pk_b);
-
-    // C->S
-    let client_hmac_k_salt = hmac_sha2(&client_k, &salt.to_bytes_be());
-
-    // S->C
-    assert!(server.authenticate(&email, &client_hmac_k_salt).is_ok());
-
+    assert!(server.authenticate(client.email(), &client_hmac).is_ok());
 }
 
 fn server_sk_pk(n: &BigUint, k: &BigUint, v: &BigUint, g: &BigUint) -> (BigUint, BigUint) {
