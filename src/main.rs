@@ -62,6 +62,40 @@ const BLOCK_SIZE: usize = 16;
 
 // Challenge 39
 
+fn do_test_rsa(p: &BigUint, q: &BigUint, e: &BigUint, message: &[u8]) {
+    let n = p.clone() * q.clone();
+    let totient = (p - 1.to_biguint().unwrap()) * (q - 1.to_biguint().unwrap());
+    let d = inv_mod(&e, &totient).unwrap();
+    let message = BigUint::from_bytes_be(message);
+    let ciphertext = message.modpow(&e, &n);
+    let plaintext = ciphertext.modpow(&d, &n);
+    assert_eq!(message, plaintext);
+}
+
+fn generate_large_primes(bit_size: usize, exp: &BigUint) -> (BigUint, BigUint) {
+    let mut rng = thread_rng();
+    loop {
+        let (p, q) = (rng.gen_prime(bit_size), rng.gen_prime(bit_size));
+        let totient = (p.clone() - 1.to_biguint().unwrap()) * (q.clone() - 1.to_biguint().unwrap());
+        if let Some(d) = inv_mod(exp, &totient) {
+            return (p, q)
+        }
+    }
+}
+
+#[test]
+fn test_rsa() {
+    let e = 3.to_biguint().unwrap();
+
+    let (p, q) = (41.to_biguint().unwrap(), 71.to_biguint().unwrap());
+    let m = [48];
+    do_test_rsa(&p, &q, &e, &m);
+
+    let (p, q) = generate_large_primes(384, &e);
+    let m = get_random_utf8();
+    do_test_rsa(&p, &q, &e, &m);
+}
+
 #[test]
 fn test_inv_mod() {
     let e = 17.to_biguint().unwrap();
