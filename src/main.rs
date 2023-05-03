@@ -53,7 +53,8 @@ use stream::{
     ctr_bit_flipping_attack,
 };
 
-use num_bigint::{BigUint, RandBigInt, ToBigUint, BigInt, ToBigInt};
+use num_bigint_dig as num_bigint;
+use num_bigint::{BigUint, RandBigInt, ToBigUint, BigInt, ToBigInt, RandPrime};
 
 fn main() {}
 
