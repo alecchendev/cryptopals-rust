@@ -53,11 +53,55 @@ use stream::{
     ctr_bit_flipping_attack,
 };
 
-use num_bigint::{BigUint, RandBigInt, ToBigUint};
+use num_bigint::{BigUint, RandBigInt, ToBigUint, BigInt, ToBigInt};
 
 fn main() {}
 
 const BLOCK_SIZE: usize = 16;
+
+// Challenge 39
+
+#[test]
+fn test_inv_mod() {
+    let e = 17.to_biguint().unwrap();
+    let et = 3120.to_biguint().unwrap();
+    let d = 2753.to_biguint().unwrap();
+    assert_eq!(inv_mod(&e, &et).unwrap(), d);
+    let e = 854.to_biguint().unwrap();
+    let et = 4567.to_biguint().unwrap();
+    let d = 123.to_biguint().unwrap();
+    assert_eq!(inv_mod(&e, &et).unwrap(), d);
+}
+
+fn inv_mod(a: &BigUint, m: &BigUint) -> Option<BigUint> {
+    let (g, x, y) = egcd(a, m);
+    if g != 1.to_biguint().unwrap() {
+        None
+    } else if x < 0.to_bigint().unwrap() {
+        Some((x + m.to_bigint().unwrap()).to_biguint().unwrap())
+    } else {
+        Some(x.to_biguint().unwrap())
+    }
+}
+
+fn egcd(a: &BigUint, b: &BigUint) -> (BigUint, BigInt, BigInt) {
+    if a == &0.to_biguint().unwrap() {
+        (b.clone(), 0.to_bigint().unwrap(), 1.to_bigint().unwrap())
+    } else {
+        let (g, y, x) = egcd(&(b % a), a);
+        (g, x - (b.to_bigint().unwrap() / a.to_bigint().unwrap()) * y.clone(), y)
+    }
+}
+
+#[test]
+fn test_egcd() {
+    let a = 1432.to_biguint().unwrap();
+    let b = 123211.to_biguint().unwrap();
+    let (g, x, y) = egcd(&a, &b);
+    assert_eq!(x, (-22973).to_bigint().unwrap());
+    assert_eq!(y, (267).to_bigint().unwrap());
+    assert_eq!(g, (a.to_bigint().unwrap() * x + b.to_bigint().unwrap() * y).to_biguint().unwrap());
+}
 
 // Challenge 38
 
