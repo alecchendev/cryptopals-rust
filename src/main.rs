@@ -60,6 +60,37 @@ fn main() {}
 
 const BLOCK_SIZE: usize = 16;
 
+// Challenge 40
+
+#[test]
+fn test_e_equals_three_rsa_broadcast_attack() {
+    let e = 3.to_biguint().unwrap();
+    let message = BigUint::from_bytes_be(&get_random_utf8());
+    let zero = 0.to_biguint().unwrap();
+    let mut residues = [zero.clone(), zero.clone(), zero.clone()];
+    let mut moduli = residues.clone();
+    for i in 0..3 {
+        let (p, q) = generate_large_primes(384, &e);
+        let n = p * q;
+        residues[i] = message.modpow(&e, &n);
+        moduli[i] = n;
+    }
+
+    let plaintext = rsa_broadcast_attack(&residues, &moduli);
+    assert_eq!(plaintext, message);
+}
+
+fn rsa_broadcast_attack(residues: &[BigUint; 3], moduli: &[BigUint; 3]) -> BigUint {
+    let m_s_0 = moduli[1].clone() * moduli[2].clone();
+    let m_s_1 = moduli[0].clone() * moduli[2].clone();
+    let m_s_2 = moduli[0].clone() * moduli[1].clone();
+    let n_012 = moduli[0].clone() * moduli[1].clone() * moduli[2].clone();
+    let result = ((residues[0].clone() * m_s_0.clone() * inv_mod(&m_s_0, &moduli[0]).unwrap()) +
+        (residues[1].clone() * m_s_1.clone() * inv_mod(&m_s_1, &moduli[1]).unwrap()) +
+        (residues[2].clone() * m_s_2.clone() * inv_mod(&m_s_2, &moduli[2]).unwrap())) % n_012;
+    result.cbrt()
+}
+
 // Challenge 39
 
 fn do_test_rsa(p: &BigUint, q: &BigUint, e: &BigUint, message: &[u8]) {
