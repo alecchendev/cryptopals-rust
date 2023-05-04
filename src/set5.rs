@@ -56,7 +56,7 @@ fn do_test_rsa(p: &BigUint, q: &BigUint, e: &BigUint, message: &[u8]) {
     assert_eq!(message, plaintext);
 }
 
-fn generate_large_primes(bit_size: usize, exp: &BigUint) -> (BigUint, BigUint) {
+pub fn generate_large_primes(bit_size: usize, exp: &BigUint) -> (BigUint, BigUint) {
     let mut rng = thread_rng();
     loop {
         let (p, q) = (rng.gen_prime(bit_size), rng.gen_prime(bit_size));
@@ -92,7 +92,7 @@ fn test_inv_mod() {
     assert_eq!(inv_mod(&e, &et).unwrap(), d);
 }
 
-fn inv_mod(a: &BigUint, m: &BigUint) -> Option<BigUint> {
+pub fn inv_mod(a: &BigUint, m: &BigUint) -> Option<BigUint> {
     let (g, x, y) = egcd(a, m);
     if g != 1.to_biguint().unwrap() {
         None
