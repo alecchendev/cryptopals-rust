@@ -1,8 +1,117 @@
-use rand::{thread_rng, Rng, RngCore};
-use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigUint};
+use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
 use num_bigint_dig as num_bigint;
-use std::collections::HashSet;
-use crate::{set5::{generate_large_primes, inv_mod}, set4::get_random_utf8};
+use rand::{thread_rng, Rng, RngCore};
+use std::{collections::HashSet, ops::Shl};
+
+use crate::{
+    set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
+    set5::{cube_root, generate_large_primes, inv_mod},
+};
+
+// Challenge 42
+
+fn bleichenbacher_forge_signature(message: &BigUint, key_length: usize) -> BigUint {
+    let padding = [0x00, 0x01, 0xFF, 0x00];
+    let asn1_data = asn1_sha1();
+    let hash = sha1(&message.to_bytes_be());
+    let block = [&padding[..], &asn1_data, &hash].concat();
+    let block_num = BigUint::from_bytes_be(&block);
+
+    let extra_len = (key_length + 7) / 8 - block.len();
+    let cube = block_num.shl(extra_len * 8);
+    let cbrt = cube_root(&cube);
+    cbrt
+}
+
+fn asn1_sha1() -> Vec<u8> {
+    hex::decode(b"3021300906052b0e03021a05000414").unwrap()
+}
+
+struct RsaKeypair {
+    n: BigUint,
+    e: BigUint,
+    d: BigUint,
+}
+
+impl RsaKeypair {
+    fn new(e: BigUint, bit_size: usize) -> Self {
+        let (p, q) = generate_large_primes(bit_size, &e);
+        let n = p.clone() * q.clone();
+        let totient = (p.clone() - 1.to_biguint().unwrap()) * (q.clone() - 1.to_biguint().unwrap());
+        let d = inv_mod(&e, &totient).unwrap();
+        Self { n, e, d }
+    }
+
+    /// Importantly, this implementation does not check that there is no
+    /// extra data after the hash, which allows for this attack.
+    fn verify(&self, message: &BigUint, signature: &BigUint) -> bool {
+        let cubed = signature.modpow(&self.e, &self.n);
+        let bytes = [vec![0x00; 1], cubed.to_bytes_be()].concat();
+
+        // Check 00 01 FF FF .. FF 00
+        if bytes[0] != 0x00 || bytes[1] != 0x01 || bytes[2] != 0xFF {
+            return false;
+        }
+        let mut idx = None;
+        for (i, &byte) in bytes.iter().enumerate().skip(3) {
+            if byte == 0xFF {
+                continue;
+            } else if byte == 0x00 {
+                idx = Some(i + 1);
+                break;
+            } else {
+                return false;
+            }
+        }
+        let idx = match idx {
+            None => return false,
+            Some(idx) => idx,
+        };
+
+        // Check ASN.1
+        let asn1_data = asn1_sha1();
+        if &bytes[idx..(idx + asn1_data.len())] != asn1_data.as_slice() {
+            return false;
+        }
+
+        // Check hash
+        let hash_len = DIGEST_LENGTH_SHA1;
+        let hash_start_idx = idx + asn1_data.len();
+        let hash_end_idx = hash_start_idx + hash_len;
+        let hash = &bytes[hash_start_idx..hash_end_idx];
+        hash == &sha1(&message.to_bytes_be())
+    }
+
+    fn sign(&self, message: &BigUint) -> BigUint {
+        let hash = sha1(&message.to_bytes_be());
+        let sha256_asn1_data = asn1_sha1();
+
+        let padding_len = (self.n.bits() - hash.len() * 8 - sha256_asn1_data.len() * 8) / 8 - 3;
+        let padding_prefix = [0x00, 0x01];
+        let padding_ff = vec![0xFF; padding_len];
+        let padding_suffix = [0x00];
+        let padding = [&padding_prefix, padding_ff.as_slice(), &padding_suffix].concat();
+
+        let data = [padding.as_slice(), sha256_asn1_data.as_slice(), &hash].concat();
+        let data = BigUint::from_bytes_be(&data);
+        data.modpow(&self.d, &self.n)
+    }
+}
+
+#[test]
+fn test_e_equals_three_bleichenbacher() {
+    let message = BigUint::from_bytes_be(b"hi mom");
+    let key_length = 1024;
+    let keypair = RsaKeypair::new(3.to_biguint().unwrap(), key_length);
+
+    let signature = keypair.sign(&message);
+    assert!(keypair.verify(&message, &signature));
+    let random_signature = thread_rng().gen_biguint(key_length);
+    assert!(!keypair.verify(&message, &random_signature));
+
+    let forged = bleichenbacher_forge_signature(&message, key_length);
+    assert!(keypair.verify(&message, &forged));
+}
 
 // Challenge 41
 
@@ -64,4 +173,3 @@ fn test_unpadded_message_recovery_oracle() {
     let plaintext = recover_message_from_unpadded_oracle(&ciphertext, &mut oracle);
     assert_eq!(plaintext, message);
 }
-

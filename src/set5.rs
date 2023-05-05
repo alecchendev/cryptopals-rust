@@ -6,6 +6,7 @@ use std::ops::Sub;
 
 use num_bigint::{BigInt, BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
 use num_bigint_dig as num_bigint;
+use num_traits::Pow;
 use sha2::{Digest, Sha256};
 
 use crate::set1::{generate_key, pkcs7_pad};
@@ -32,6 +33,21 @@ fn test_e_equals_three_rsa_broadcast_attack() {
     assert_eq!(plaintext, message);
 }
 
+pub fn cube_root(n: &BigUint) -> BigUint {
+    let mut low = 0.to_biguint().unwrap();
+    let mut high = n.clone();
+
+    while low < high {
+        let mid = (low.clone() + high.clone()) / 2.to_biguint().unwrap();
+        if &mid.clone().pow(3u8) < n {
+            low = mid.clone() + 1.to_biguint().unwrap();
+        } else {
+            high = mid;
+        }
+    }
+    high.clone()
+}
+
 fn rsa_broadcast_attack(residues: &[BigUint; 3], moduli: &[BigUint; 3]) -> BigUint {
     let m_s_0 = moduli[1].clone() * moduli[2].clone();
     let m_s_1 = moduli[0].clone() * moduli[2].clone();
@@ -41,7 +57,7 @@ fn rsa_broadcast_attack(residues: &[BigUint; 3], moduli: &[BigUint; 3]) -> BigUi
         + (residues[1].clone() * m_s_1.clone() * inv_mod(&m_s_1, &moduli[1]).unwrap())
         + (residues[2].clone() * m_s_2.clone() * inv_mod(&m_s_2, &moduli[2]).unwrap()))
         % n_012;
-    result.cbrt()
+    cube_root(&result)
 }
 
 // Challenge 39

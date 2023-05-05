@@ -139,6 +139,7 @@ dependencies = [
  "base64 0.21.0",
  "hex",
  "num-bigint-dig",
+ "num-traits",
  "rand",
  "reqwest",
  "sha2",
