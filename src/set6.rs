@@ -1,12 +1,112 @@
 use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
 use num_bigint_dig as num_bigint;
+use num_traits::{One, Zero};
 use rand::{thread_rng, Rng, RngCore};
 use std::{collections::HashSet, ops::Shl};
 
 use crate::{
     set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
-    set5::{cube_root, generate_large_primes, inv_mod},
+    set5::{cube_root, generate_large_primes, inv_mod, sha2},
 };
+
+// Challenge 43
+
+#[test]
+fn test_dsa() {
+    let params = dsa_default_parameters();
+    let (sk, pk) = dsa_new_keypair(&params);
+    let message = b"hi mom";
+    let sig = dsa_sign(&params, &sk, message);
+    assert!(dsa_verify(&params, &pk, message, &sig));
+}
+
+fn dsa_new_keypair(params: &DsaParameters) -> (DsaSecretKey, DsaPublicKey) {
+    let x = thread_rng().gen_biguint_range(&BigUint::one(), &params.q);
+    let y = params.g.modpow(&x, &params.p);
+    (DsaSecretKey { x }, DsaPublicKey { y })
+}
+
+struct DsaSecretKey {
+    x: BigUint,
+}
+
+struct DsaPublicKey {
+    y: BigUint,
+}
+
+struct DsaSignature {
+    r: BigUint,
+    s: BigUint,
+}
+
+fn dsa_sign(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8]) -> DsaSignature {
+    loop {
+        let k = thread_rng().gen_biguint_range(&BigUint::one(), &params.q);
+        if let Some(k_inv) = inv_mod(&k, &params.q) {
+            assert!(k.clone() * k_inv.clone() % params.q.clone() == BigUint::one());
+            let r = params.g.modpow(&k, &params.p) % params.q.clone();
+            if r.is_zero() {
+                continue;
+            }
+            let hash = BigUint::from_bytes_be(&sha2(message));
+            let s = (k_inv * (hash + sk.x.clone() * r.clone())) % params.q.clone();
+            if s.is_zero() {
+                continue;
+            }
+            return DsaSignature { r, s };
+        }
+    }
+}
+
+fn dsa_verify(
+    params: &DsaParameters,
+    pk: &DsaPublicKey,
+    message: &[u8],
+    sig: &DsaSignature,
+) -> bool {
+    if !(sig.r > BigUint::zero() && sig.r < params.q) {
+        return false;
+    }
+    if !(sig.s > BigUint::zero() && sig.s < params.q) {
+        return false;
+    }
+    let w = match inv_mod(&sig.s, &params.q) {
+        Some(s_inv) => s_inv,
+        None => return false,
+    };
+    println!("actually computing");
+    let hash = BigUint::from_bytes_be(&sha2(message));
+    let u_1 = (hash * w.clone()) % params.q.clone();
+    let u_2 = (sig.r.clone() * w) % params.q.clone();
+    let v = (params.g.clone().modpow(&u_1, &params.p) * pk.y.clone().modpow(&u_2, &params.p))
+        % params.p.clone()
+        % params.q.clone();
+    v == sig.r
+}
+
+struct DsaParameters {
+    p: BigUint,
+    q: BigUint,
+    g: BigUint,
+}
+
+fn dsa_default_parameters() -> DsaParameters {
+    let p = BigUint::from_bytes_be(
+        &hex::decode(
+            b"800000000000000089e1855218a0e7dac38136ffafa72eda7859f2171e25e65eac698c1702578b07dc2a1076da241c76c62d374d8389ea5aeffd3226a0530cc565f3bf6b50929139ebeac04f48c3c84afb796d61e5a4f9a8fda812ab59494232c7d2b4deb50aa18ee9e132bfa85ac4374d7f9091abc3d015efc871a584471bb1",
+        )
+        .unwrap(),
+    );
+    let q =
+        BigUint::from_bytes_be(&hex::decode(b"f4f47f05794b256174bba6e9b396a7707e563c5b").unwrap());
+    let g = BigUint::from_bytes_be(
+        &hex::decode(
+            b"5958c9d3898b224b12672c0b98e06c60df923cb8bc999d119458fef538b8fa4046c8db53039db620c094c9fa077ef389b5322a559946a71903f990f1f7e0e025e2d7f7cf494aff1a0470f5b64c36b625a097f1651fe775323556fe00b3608c887892878480e99041be601a62166ca6894bdd41a7054ec89f756ba9fc95302291",
+        )
+        .unwrap(),
+    );
+    DsaParameters { p, q, g }
+}
 
 // Challenge 42
 
