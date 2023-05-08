@@ -1,8 +1,12 @@
-use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
+use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint, BigInt};
 use num_bigint_dig as num_bigint;
 use num_traits::{One, Zero};
 use rand::{thread_rng, Rng, RngCore};
+use std::str::FromStr;
+use std::thread::sleep;
+use std::time::Duration;
 use std::{collections::HashSet, ops::Shl};
+use std::ops::Range;
 
 use crate::{
     set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
@@ -10,6 +14,105 @@ use crate::{
 };
 
 // Challenge 43
+
+#[test]
+fn test_find_secret_example() {
+    let params = dsa_default_parameters();
+    let message = b"For those that envy a MC it can be hazardous to your health\nSo be friendly, a matter of life and death, just like a etch-a-sketch\n";
+    let hash = hex::decode(b"d2d0714f014a9784047eaeccf956520045c45265").unwrap();
+    assert_eq!(hash, sha1(message));
+
+    let r = BigUint::from_str("548099063082341131477253921760299949438196259240").unwrap();
+    let s = BigUint::from_str("857042759984254168557880549501802188789837994940").unwrap();
+    let sig = DsaSignature { r, s };
+    let y = BigUint::from_bytes_be(&hex::decode(b"084ad4719d044495496a3201c8ff484feb45b962e7302e56a392aee4abab3e4bdebf2955b4736012f21a08084056b19bcd7fee56048e004e44984e2f411788efdc837a0d2e5abb7b555039fd243ac01f0fb2ed1dec568280ce678e931868d23eb095fde9d3779191b8c0299d6e07bbb283e6633451e535c45513b2d33c99ea17").unwrap());
+    let pk = DsaPublicKey { y };
+    assert!(dsa_verify(&params, &pk, message, &sig));
+
+    let k_range  = 16500..17000; // to speed up test
+    let solved_secret = find_secret_k_range(&params, &sig, message, k_range).unwrap();
+    assert_eq!(pk.y, params.g.modpow(&solved_secret.x, &params.p));
+
+    let fingerprint = hex::decode(b"0954edd5e0afe5542a4adf012611a91912a3ec16").unwrap();
+    let hex_secret = hex::encode(solved_secret.x.to_bytes_be());
+    assert_eq!(fingerprint, sha1(&hex_secret.as_bytes()));
+}
+
+#[cfg(wait)]
+#[test]
+fn test_find_secret_dsa_faulty_sign() {
+    let params = dsa_default_parameters();
+    let (sk, pk) = dsa_new_keypair(&params);
+    let message = b"hi mom";
+    let k_range  = 0..(1 << 16);
+    let faulty_sig = dsa_sign_k_range(&params, &sk, message, k_range.clone());
+    assert!(dsa_verify(&params, &pk, message, &faulty_sig));
+    let solved_secret = find_secret_k_range(&params, &faulty_sig, message, k_range).unwrap();
+    assert!(solved_secret == sk);
+}
+
+fn find_secret_k_range(params: &DsaParameters, sig: &DsaSignature, message: &[u8], k_range: Range<usize>) -> Option<DsaSecretKey> {
+    let hash = BigUint::from_bytes_be(&sha1(message)).to_bigint().unwrap();
+    let r_inv = inv_mod(&sig.r, &params.q).unwrap().to_bigint().unwrap();
+    let s = sig.s.to_bigint().unwrap();
+    let q = params.q.to_bigint().unwrap();
+    for k in k_range {
+        let k = k.to_bigint().unwrap();
+        let secret = find_secret_given_values(&s, &k, &hash, &r_inv, &q);
+        let k = k.to_biguint().unwrap();
+        if let Some(candidate_sig) = dsa_sign_given_k(params, &secret, message, &k) {
+            if &candidate_sig == sig {
+                return Some(secret);
+            }
+        }
+    }
+    None
+}
+
+fn dsa_sign_k_range(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8], k_range: Range<usize>) -> DsaSignature {
+    let start = k_range.start.to_biguint().unwrap();
+    let end = k_range.end.to_biguint().unwrap();
+    loop {
+        let k = thread_rng().gen_biguint_range(&start, &end);
+        if let Some(sig) = dsa_sign_given_k(params, sk, message, &k) {
+            return sig;
+        }
+    }
+}
+
+#[test]
+fn test_find_secret_given_k() {
+    let params = dsa_default_parameters();
+    let (sk, pk) = dsa_new_keypair(&params);
+    let message = b"hi mom";
+    let (k, sig) = loop {
+        let k = thread_rng().gen_biguint_range(&BigUint::one(), &params.q);
+        if let Some(sig) = dsa_sign_given_k(&params, &sk, message, &k) {
+            break (k, sig);
+        }
+    };
+    assert!(dsa_verify(&params, &pk, message, &sig));
+    let solved_secret = find_secret(&params, &sig, message, &k);
+    assert!(sk == solved_secret);
+}
+
+fn find_secret(params: &DsaParameters, sig: &DsaSignature, message: &[u8], k: &BigUint) -> DsaSecretKey {
+    let s = sig.s.to_bigint().unwrap();
+    let k = k.to_bigint().unwrap();
+    let q = params.q.to_bigint().unwrap();
+    let hash = BigUint::from_bytes_be(&sha1(message)).to_bigint().unwrap();
+    let r_inv = inv_mod(&sig.r, &params.q).unwrap().to_bigint().unwrap();
+    find_secret_given_values(&s, &k, &hash, &r_inv, &q)
+}
+
+fn find_secret_given_values(s: &BigInt, k: &BigInt, hash: &BigInt, r_inv: &BigInt, q: &BigInt) -> DsaSecretKey {
+    let mut res = ((s * k - hash) * r_inv) % q;
+    while res < BigInt::zero() {
+        res += q.clone();
+    }
+    let x = res.to_biguint().unwrap();
+    DsaSecretKey { x }
+}
 
 #[test]
 fn test_dsa() {
@@ -26,6 +129,7 @@ fn dsa_new_keypair(params: &DsaParameters) -> (DsaSecretKey, DsaPublicKey) {
     (DsaSecretKey { x }, DsaPublicKey { y })
 }
 
+#[derive(PartialEq)]
 struct DsaSecretKey {
     x: BigUint,
 }
@@ -34,6 +138,7 @@ struct DsaPublicKey {
     y: BigUint,
 }
 
+#[derive(PartialEq)]
 struct DsaSignature {
     r: BigUint,
     s: BigUint,
@@ -42,20 +147,28 @@ struct DsaSignature {
 fn dsa_sign(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8]) -> DsaSignature {
     loop {
         let k = thread_rng().gen_biguint_range(&BigUint::one(), &params.q);
-        if let Some(k_inv) = inv_mod(&k, &params.q) {
-            assert!(k.clone() * k_inv.clone() % params.q.clone() == BigUint::one());
-            let r = params.g.modpow(&k, &params.p) % params.q.clone();
-            if r.is_zero() {
-                continue;
-            }
-            let hash = BigUint::from_bytes_be(&sha2(message));
-            let s = (k_inv * (hash + sk.x.clone() * r.clone())) % params.q.clone();
-            if s.is_zero() {
-                continue;
-            }
-            return DsaSignature { r, s };
+        if let Some(sig) = dsa_sign_given_k(params, sk, message, &k) {
+            return sig;
         }
     }
+}
+
+fn dsa_sign_given_k(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8], k: &BigUint) -> Option<DsaSignature> {
+    let k_inv = match inv_mod(k, &params.q) {
+        Some(k_inv) => k_inv,
+        None => return None,
+    };
+    assert!(k.clone() * k_inv.clone() % params.q.clone() == BigUint::one());
+    let r = params.g.modpow(k, &params.p) % params.q.clone();
+    if r.is_zero() {
+        return None;
+    }
+    let hash = BigUint::from_bytes_be(&sha1(message));
+    let s = (k_inv * (hash + sk.x.clone() * r.clone())) % params.q.clone();
+    if s.is_zero() {
+        return None;
+    }
+    Some(DsaSignature { r, s })
 }
 
 fn dsa_verify(
@@ -74,8 +187,7 @@ fn dsa_verify(
         Some(s_inv) => s_inv,
         None => return false,
     };
-    println!("actually computing");
-    let hash = BigUint::from_bytes_be(&sha2(message));
+    let hash = BigUint::from_bytes_be(&sha1(message));
     let u_1 = (hash * w.clone()) % params.q.clone();
     let u_2 = (sig.r.clone() * w) % params.q.clone();
     let v = (params.g.clone().modpow(&u_1, &params.p) * pk.y.clone().modpow(&u_2, &params.p))
