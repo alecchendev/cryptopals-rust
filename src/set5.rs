@@ -91,7 +91,7 @@ fn test_rsa() {
     let m = [48];
     do_test_rsa(&p, &q, &e, &m);
 
-    let (p, q) = generate_large_primes(384, &e);
+    let (p, q) = generate_large_primes(512, &e);
     let m = get_random_utf8();
     do_test_rsa(&p, &q, &e, &m);
 }
