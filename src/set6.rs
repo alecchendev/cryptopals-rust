@@ -15,6 +15,74 @@ use crate::{
     set5::{cube_root, generate_large_primes, inv_mod},
 };
 
+// Challenge 45
+
+#[test]
+fn test_dsa_parameter_tampering() {
+    let default_params = dsa_default_parameters();
+    let hello_world = b"Hello, world";
+    let goodbye_world = b"Goodbye, world";
+
+    // g = 0
+    let params = DsaParameters {
+        g: BigUint::zero(),
+        ..default_params.clone()
+    };
+    let (sk, pk) = dsa_new_keypair(&params);
+    let sig = dsa_sign_unsafe(&params, &sk, hello_world);
+    assert!(dsa_verify_unsafe(&params, &pk, hello_world, &sig));
+    let forge_and_verify = |message| {
+        let forged_sig = dsa_sign_g_equals_zero(&params, message);
+        assert!(dsa_verify_unsafe(&params, &pk, message, &forged_sig));
+    };
+    forge_and_verify(hello_world);
+    forge_and_verify(goodbye_world);
+
+    // g = 1 mod p
+    let params = DsaParameters {
+        g: default_params.p.clone() + BigUint::one(),
+        ..default_params
+    };
+    let (sk, pk) = dsa_new_keypair(&params);
+    let sig = dsa_sign(&params, &sk, hello_world);
+    assert!(dsa_verify(&params, &pk, hello_world, &sig));
+    let forge_and_verify = |message| {
+        let sig = dsa_sign_g_equals_one_mod_p(&params, &pk);
+        assert!(dsa_verify(&params, &pk, message, &sig));
+    };
+    forge_and_verify(hello_world);
+    forge_and_verify(goodbye_world);
+}
+
+fn dsa_sign_g_equals_zero(params: &DsaParameters, message: &[u8]) -> DsaSignature {
+    let r = BigUint::zero();
+    let k_inv = loop {
+        let k = thread_rng().gen_biguint_range(&BigUint::one(), &params.q);
+        match inv_mod(&k, &params.q) {
+            Some(k_inv) => break k_inv,
+            None => continue,
+        }
+    };
+    let hash = BigUint::from_bytes_be(&sha1(message));
+    let s = (k_inv * hash) % params.q.clone();
+    DsaSignature { r, s }
+}
+
+fn dsa_sign_g_equals_one_mod_p(params: &DsaParameters, pk: &DsaPublicKey) -> DsaSignature {
+    let (z, z_inv) = loop {
+        let z = thread_rng().gen_biguint_range(&BigUint::one(), &params.q); // arbitrary range
+        match inv_mod(&z, &params.q) {
+            Some(z_inv) => break (z, z_inv),
+            None => continue,
+        }
+    };
+    // r = (y ** z % p) % q
+    let r = pk.y.modpow(&z, &params.p) % params.q.clone();
+    // s = r / z % q
+    let s = (r.clone() * z_inv) % params.q.clone();
+    DsaSignature { r, s }
+}
+
 // Challenge 44
 
 #[test]
@@ -292,6 +360,21 @@ fn dsa_sign_given_k(
     dsa_sign_given_values(params, sk, &hash, &k_inv, &r)
 }
 
+// No check to ensure r, s != 0
+fn dsa_sign_unsafe(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8]) -> DsaSignature {
+    let (k, k_inv) = loop {
+        let k = thread_rng().gen_biguint_range(&BigUint::one(), &params.q);
+        match inv_mod(&k, &params.q) {
+            Some(k_inv) => break (k, k_inv),
+            None => continue,
+        }
+    };
+    let r = params.g.modpow(&k, &params.p) % params.q.clone();
+    let hash = BigUint::from_bytes_be(&sha1(message));
+    let s = (k_inv * (hash + sk.x.clone() * r.clone())) % params.q.clone();
+    DsaSignature { r, s }
+}
+
 fn dsa_sign_given_values(
     params: &DsaParameters,
     sk: &DsaSecretKey,
@@ -332,6 +415,33 @@ fn dsa_verify(
     v == sig.r
 }
 
+// No check to ensure r, s != 0
+fn dsa_verify_unsafe(
+    params: &DsaParameters,
+    pk: &DsaPublicKey,
+    message: &[u8],
+    sig: &DsaSignature,
+) -> bool {
+    if sig.r >= params.q {
+        return false;
+    }
+    if sig.s >= params.q {
+        return false;
+    }
+    let w = match inv_mod(&sig.s, &params.q) {
+        Some(s_inv) => s_inv,
+        None => return false,
+    };
+    let hash = BigUint::from_bytes_be(&sha1(message));
+    let u_1 = (hash * w.clone()) % params.q.clone();
+    let u_2 = (sig.r.clone() * w) % params.q.clone();
+    let v = (params.g.clone().modpow(&u_1, &params.p) * pk.y.clone().modpow(&u_2, &params.p))
+        % params.p.clone()
+        % params.q.clone();
+    v == sig.r
+}
+
+#[derive(Clone)]
 struct DsaParameters {
     p: BigUint,
     q: BigUint,
