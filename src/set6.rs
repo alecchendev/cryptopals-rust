@@ -1,17 +1,98 @@
 use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint, BigInt};
 use num_bigint_dig as num_bigint;
-use num_traits::{One, Zero};
+use num_traits::{One, Zero, Num};
 use rand::{thread_rng, Rng, RngCore};
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use std::{collections::HashSet, ops::Shl};
 use std::ops::Range;
+use std::fs;
+use std::io::Read;
 
 use crate::{
     set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
-    set5::{cube_root, generate_large_primes, inv_mod, sha2},
+    set5::{cube_root, generate_large_primes, inv_mod},
 };
+
+// Challenge 44
+
+#[test]
+fn test_repeated_nonce_recovery() {
+    let params = dsa_default_parameters();
+    let y = BigUint::from_bytes_be(&hex::decode(b"2d026f4bf30195ede3a088da85e398ef869611d0f68f0713d51c9c1a3a26c95105d915e2d8cdf26d056b86b8a7b85519b1c23cc3ecdc6062650462e3063bd179c2a6581519f674a61f1d89a1fff27171ebc1b93d4dc57bceb7ae2430f98a6a4d83d8279ee65d71c1203d2c96d65ebbf7cce9d32971c3de5084cce04a2e147821").unwrap());
+    let pk = DsaPublicKey { y };
+
+    let mut file = fs::File::open("data/44.txt").unwrap();
+    let mut messages = String::new();
+    file.read_to_string(&mut messages).unwrap();
+    let msgs_and_sigs = messages.lines().collect::<Vec<&str>>().chunks(4).map(|chunk| {
+        let msg = chunk[0][5..].as_bytes();
+        let s = BigUint::from_str_radix(&chunk[1][3..], 10).unwrap();
+        let r = BigUint::from_str_radix(&chunk[2][3..], 10).unwrap();
+        let m = BigUint::from_str_radix(&chunk[3][3..], 16).unwrap();
+        assert_eq!(m.to_bytes_be().as_slice(), &sha1(msg));
+        let sig = DsaSignature { r, s };
+        assert!(dsa_verify(&params, &pk, msg, &sig));
+        (msg.to_owned(), sig)
+    }).collect::<Vec<(Vec<u8>, DsaSignature)>>();
+
+    let (k, msg, sig) = recover_repeated_nonce_from_messages(&params, msgs_and_sigs).unwrap();
+    let sk = find_secret(&params, &sig, &msg, &k);
+    let sk_hash = sha1(hex::encode(&sk.x.to_bytes_be()).as_bytes());
+
+    let expected_private_key_hash = hex::decode(b"ca8f6f7c66fa362d40760d135b763eb8527d3d52").unwrap();
+    assert_eq!(sk_hash.to_vec(), expected_private_key_hash)
+}
+
+fn recover_repeated_nonce_from_messages(
+    params: &DsaParameters,
+    msgs_and_sigs: Vec<(Vec<u8>, DsaSignature)>
+) -> Option<(BigUint, Vec<u8>, DsaSignature)> {
+    let hashes_msgs_and_sigs = msgs_and_sigs
+        .into_iter()
+        .map(|(msg, sig)| (BigUint::from_bytes_be(&sha1(&msg)), msg, sig))
+        .collect::<Vec<(BigUint, Vec<u8>, DsaSignature)>>();
+
+    for (i, (m0, _msg0, sig0)) in hashes_msgs_and_sigs.iter().enumerate().take(hashes_msgs_and_sigs.len() - 1) {
+        for (m1, msg1, sig1) in hashes_msgs_and_sigs.iter().skip(i + 1) {
+            match (|| -> Option<(BigUint, Vec<u8>, DsaSignature)> {
+                let k = recover_repeated_nonce(&params.q, &m0, &sig0.s, &m1, &sig1.s)?;
+                let k_inv = inv_mod(&k, &params.q)?;
+                let sk = find_secret(params, sig1, msg1, &k);
+                let sig0_obs = dsa_sign_given_values(params, &sk, &m0, &k_inv, &sig0.r)?;
+                let sig1_obs = dsa_sign_given_values(params, &sk, &m1, &k_inv, &sig1.r)?;
+                if &sig0_obs == sig0 && &sig1_obs == sig1 {
+                    Some((k, msg1.clone(), sig1.clone()))
+                } else {
+                    None
+                }
+            })() {
+                Some(res) => return Some(res),
+                None => continue,
+            };
+        }
+    }
+    None
+}
+
+fn recover_repeated_nonce(q: &BigUint, m0: &BigUint, s0: &BigUint, m1: &BigUint, s1: &BigUint) -> Option<BigUint> {
+    let m0 = m0.to_bigint().unwrap();
+    let s0 = s0.to_bigint().unwrap();
+    let m1 = m1.to_bigint().unwrap();
+    let s1 = s1.to_bigint().unwrap();
+    let q = q.to_bigint().unwrap();
+    let sub_mod = |mut expr: BigInt, q: BigInt| -> BigUint {
+        while expr < BigInt::zero() { expr += q.clone(); }
+        expr.to_biguint().unwrap()
+    };
+    let numerator = sub_mod(m0 - m1, q.clone());
+    let denominator = sub_mod(s0 - s1, q.clone());
+    let q = q.to_biguint().unwrap();
+    let d_inv = inv_mod(&denominator, &q)?;
+    let k = (numerator * d_inv) % q;
+    Some(k)
+}
 
 // Challenge 43
 
@@ -138,7 +219,7 @@ struct DsaPublicKey {
     y: BigUint,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 struct DsaSignature {
     r: BigUint,
     s: BigUint,
@@ -164,11 +245,16 @@ fn dsa_sign_given_k(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8], k
         return None;
     }
     let hash = BigUint::from_bytes_be(&sha1(message));
-    let s = (k_inv * (hash + sk.x.clone() * r.clone())) % params.q.clone();
+    dsa_sign_given_values(params, sk, &hash, &k_inv, &r)
+}
+
+fn dsa_sign_given_values(params: &DsaParameters, sk: &DsaSecretKey, msg_hash: &BigUint, k_inv: &BigUint, r: &BigUint) -> Option<DsaSignature> {
+    let s = (k_inv * (msg_hash + sk.x.clone() * r.clone())) % params.q.clone();
     if s.is_zero() {
-        return None;
+        None
+    } else {
+        Some(DsaSignature { r: r.clone(), s })
     }
-    Some(DsaSignature { r, s })
 }
 
 fn dsa_verify(
