@@ -1,14 +1,14 @@
-use num_bigint::{BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint, BigInt};
+use num_bigint::{BigInt, BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
 use num_bigint_dig as num_bigint;
-use num_traits::{One, Zero, Num};
+use num_traits::{Num, One, Zero};
 use rand::{thread_rng, Rng, RngCore};
+use std::fs;
+use std::io::Read;
+use std::ops::Range;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use std::{collections::HashSet, ops::Shl};
-use std::ops::Range;
-use std::fs;
-use std::io::Read;
 
 use crate::{
     set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
@@ -26,35 +26,45 @@ fn test_repeated_nonce_recovery() {
     let mut file = fs::File::open("data/44.txt").unwrap();
     let mut messages = String::new();
     file.read_to_string(&mut messages).unwrap();
-    let msgs_and_sigs = messages.lines().collect::<Vec<&str>>().chunks(4).map(|chunk| {
-        let msg = chunk[0][5..].as_bytes();
-        let s = BigUint::from_str_radix(&chunk[1][3..], 10).unwrap();
-        let r = BigUint::from_str_radix(&chunk[2][3..], 10).unwrap();
-        let m = BigUint::from_str_radix(&chunk[3][3..], 16).unwrap();
-        assert_eq!(m.to_bytes_be().as_slice(), &sha1(msg));
-        let sig = DsaSignature { r, s };
-        assert!(dsa_verify(&params, &pk, msg, &sig));
-        (msg.to_owned(), sig)
-    }).collect::<Vec<(Vec<u8>, DsaSignature)>>();
+    let msgs_and_sigs = messages
+        .lines()
+        .collect::<Vec<&str>>()
+        .chunks(4)
+        .map(|chunk| {
+            let msg = chunk[0][5..].as_bytes();
+            let s = BigUint::from_str_radix(&chunk[1][3..], 10).unwrap();
+            let r = BigUint::from_str_radix(&chunk[2][3..], 10).unwrap();
+            let m = BigUint::from_str_radix(&chunk[3][3..], 16).unwrap();
+            assert_eq!(m.to_bytes_be().as_slice(), &sha1(msg));
+            let sig = DsaSignature { r, s };
+            assert!(dsa_verify(&params, &pk, msg, &sig));
+            (msg.to_owned(), sig)
+        })
+        .collect::<Vec<(Vec<u8>, DsaSignature)>>();
 
     let (k, msg, sig) = recover_repeated_nonce_from_messages(&params, msgs_and_sigs).unwrap();
     let sk = find_secret(&params, &sig, &msg, &k);
     let sk_hash = sha1(hex::encode(&sk.x.to_bytes_be()).as_bytes());
 
-    let expected_private_key_hash = hex::decode(b"ca8f6f7c66fa362d40760d135b763eb8527d3d52").unwrap();
+    let expected_private_key_hash =
+        hex::decode(b"ca8f6f7c66fa362d40760d135b763eb8527d3d52").unwrap();
     assert_eq!(sk_hash.to_vec(), expected_private_key_hash)
 }
 
 fn recover_repeated_nonce_from_messages(
     params: &DsaParameters,
-    msgs_and_sigs: Vec<(Vec<u8>, DsaSignature)>
+    msgs_and_sigs: Vec<(Vec<u8>, DsaSignature)>,
 ) -> Option<(BigUint, Vec<u8>, DsaSignature)> {
     let hashes_msgs_and_sigs = msgs_and_sigs
         .into_iter()
         .map(|(msg, sig)| (BigUint::from_bytes_be(&sha1(&msg)), msg, sig))
         .collect::<Vec<(BigUint, Vec<u8>, DsaSignature)>>();
 
-    for (i, (m0, _msg0, sig0)) in hashes_msgs_and_sigs.iter().enumerate().take(hashes_msgs_and_sigs.len() - 1) {
+    for (i, (m0, _msg0, sig0)) in hashes_msgs_and_sigs
+        .iter()
+        .enumerate()
+        .take(hashes_msgs_and_sigs.len() - 1)
+    {
         for (m1, msg1, sig1) in hashes_msgs_and_sigs.iter().skip(i + 1) {
             match (|| -> Option<(BigUint, Vec<u8>, DsaSignature)> {
                 let k = recover_repeated_nonce(&params.q, &m0, &sig0.s, &m1, &sig1.s)?;
@@ -76,14 +86,22 @@ fn recover_repeated_nonce_from_messages(
     None
 }
 
-fn recover_repeated_nonce(q: &BigUint, m0: &BigUint, s0: &BigUint, m1: &BigUint, s1: &BigUint) -> Option<BigUint> {
+fn recover_repeated_nonce(
+    q: &BigUint,
+    m0: &BigUint,
+    s0: &BigUint,
+    m1: &BigUint,
+    s1: &BigUint,
+) -> Option<BigUint> {
     let m0 = m0.to_bigint().unwrap();
     let s0 = s0.to_bigint().unwrap();
     let m1 = m1.to_bigint().unwrap();
     let s1 = s1.to_bigint().unwrap();
     let q = q.to_bigint().unwrap();
     let sub_mod = |mut expr: BigInt, q: BigInt| -> BigUint {
-        while expr < BigInt::zero() { expr += q.clone(); }
+        while expr < BigInt::zero() {
+            expr += q.clone();
+        }
         expr.to_biguint().unwrap()
     };
     let numerator = sub_mod(m0 - m1, q.clone());
@@ -110,7 +128,7 @@ fn test_find_secret_example() {
     let pk = DsaPublicKey { y };
     assert!(dsa_verify(&params, &pk, message, &sig));
 
-    let k_range  = 16500..17000; // to speed up test
+    let k_range = 16500..17000; // to speed up test
     let solved_secret = find_secret_k_range(&params, &sig, message, k_range).unwrap();
     assert_eq!(pk.y, params.g.modpow(&solved_secret.x, &params.p));
 
@@ -125,14 +143,19 @@ fn test_find_secret_dsa_faulty_sign() {
     let params = dsa_default_parameters();
     let (sk, pk) = dsa_new_keypair(&params);
     let message = b"hi mom";
-    let k_range  = 0..(1 << 16);
+    let k_range = 0..(1 << 16);
     let faulty_sig = dsa_sign_k_range(&params, &sk, message, k_range.clone());
     assert!(dsa_verify(&params, &pk, message, &faulty_sig));
     let solved_secret = find_secret_k_range(&params, &faulty_sig, message, k_range).unwrap();
     assert!(solved_secret == sk);
 }
 
-fn find_secret_k_range(params: &DsaParameters, sig: &DsaSignature, message: &[u8], k_range: Range<usize>) -> Option<DsaSecretKey> {
+fn find_secret_k_range(
+    params: &DsaParameters,
+    sig: &DsaSignature,
+    message: &[u8],
+    k_range: Range<usize>,
+) -> Option<DsaSecretKey> {
     let hash = BigUint::from_bytes_be(&sha1(message)).to_bigint().unwrap();
     let r_inv = inv_mod(&sig.r, &params.q).unwrap().to_bigint().unwrap();
     let s = sig.s.to_bigint().unwrap();
@@ -150,7 +173,12 @@ fn find_secret_k_range(params: &DsaParameters, sig: &DsaSignature, message: &[u8
     None
 }
 
-fn dsa_sign_k_range(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8], k_range: Range<usize>) -> DsaSignature {
+fn dsa_sign_k_range(
+    params: &DsaParameters,
+    sk: &DsaSecretKey,
+    message: &[u8],
+    k_range: Range<usize>,
+) -> DsaSignature {
     let start = k_range.start.to_biguint().unwrap();
     let end = k_range.end.to_biguint().unwrap();
     loop {
@@ -177,7 +205,12 @@ fn test_find_secret_given_k() {
     assert!(sk == solved_secret);
 }
 
-fn find_secret(params: &DsaParameters, sig: &DsaSignature, message: &[u8], k: &BigUint) -> DsaSecretKey {
+fn find_secret(
+    params: &DsaParameters,
+    sig: &DsaSignature,
+    message: &[u8],
+    k: &BigUint,
+) -> DsaSecretKey {
     let s = sig.s.to_bigint().unwrap();
     let k = k.to_bigint().unwrap();
     let q = params.q.to_bigint().unwrap();
@@ -186,7 +219,13 @@ fn find_secret(params: &DsaParameters, sig: &DsaSignature, message: &[u8], k: &B
     find_secret_given_values(&s, &k, &hash, &r_inv, &q)
 }
 
-fn find_secret_given_values(s: &BigInt, k: &BigInt, hash: &BigInt, r_inv: &BigInt, q: &BigInt) -> DsaSecretKey {
+fn find_secret_given_values(
+    s: &BigInt,
+    k: &BigInt,
+    hash: &BigInt,
+    r_inv: &BigInt,
+    q: &BigInt,
+) -> DsaSecretKey {
     let mut res = ((s * k - hash) * r_inv) % q;
     while res < BigInt::zero() {
         res += q.clone();
@@ -234,7 +273,12 @@ fn dsa_sign(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8]) -> DsaSig
     }
 }
 
-fn dsa_sign_given_k(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8], k: &BigUint) -> Option<DsaSignature> {
+fn dsa_sign_given_k(
+    params: &DsaParameters,
+    sk: &DsaSecretKey,
+    message: &[u8],
+    k: &BigUint,
+) -> Option<DsaSignature> {
     let k_inv = match inv_mod(k, &params.q) {
         Some(k_inv) => k_inv,
         None => return None,
@@ -248,7 +292,13 @@ fn dsa_sign_given_k(params: &DsaParameters, sk: &DsaSecretKey, message: &[u8], k
     dsa_sign_given_values(params, sk, &hash, &k_inv, &r)
 }
 
-fn dsa_sign_given_values(params: &DsaParameters, sk: &DsaSecretKey, msg_hash: &BigUint, k_inv: &BigUint, r: &BigUint) -> Option<DsaSignature> {
+fn dsa_sign_given_values(
+    params: &DsaParameters,
+    sk: &DsaSecretKey,
+    msg_hash: &BigUint,
+    k_inv: &BigUint,
+    r: &BigUint,
+) -> Option<DsaSignature> {
     let s = (k_inv * (msg_hash + sk.x.clone() * r.clone())) % params.q.clone();
     if s.is_zero() {
         None
