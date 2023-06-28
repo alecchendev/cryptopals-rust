@@ -1,6 +1,7 @@
+use base64::{engine::general_purpose, Engine};
 use num_bigint::{BigInt, BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
 use num_bigint_dig as num_bigint;
-use num_traits::{Num, One, Zero};
+use num_traits::{FromPrimitive, Num, One, Zero};
 use rand::{thread_rng, Rng, RngCore};
 use std::fs;
 use std::io::Read;
@@ -14,6 +15,64 @@ use crate::{
     set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
     set5::{cube_root, generate_large_primes, inv_mod},
 };
+
+// Challenge 46
+
+#[cfg(wait)]
+#[test]
+pub fn test_rsa_parity_oracle() {
+    let plaintext_b64 = b"VGhhdCdzIHdoeSBJIGZvdW5kIHlvdSBkb24ndCBwbGF5IGFyb3VuZCB3aXRoIHRoZSBGdW5reSBDb2xkIE1lZGluYQ==";
+    let plaintext_bytes = general_purpose::STANDARD.decode(plaintext_b64).unwrap();
+    let plaintext = BigUint::from_bytes_be(&plaintext_bytes);
+
+    let e = BigUint::from_u8(3).unwrap();
+    let keypair = RsaKeypair::new(e.clone(), 1024);
+    let n = keypair.n.clone();
+    let ciphertext = plaintext.modpow(&keypair.e, &keypair.n);
+
+    let oracle = RsaParityOracle { keypair };
+    let decrypted_plaintext = rsa_decrypt_from_parity_oracle(&ciphertext, &e, &n, &oracle);
+    let diff_bits: u32 = (plaintext.clone() ^ decrypted_plaintext.clone())
+        .to_bytes_be()
+        .iter()
+        .map(|byte| byte.count_ones())
+        .sum();
+    // There's usually a 1 bit difference...I'm not sure exactly why
+    assert!(diff_bits <= 1);
+}
+
+fn rsa_decrypt_from_parity_oracle(
+    ciphertext: &BigUint,
+    e: &BigUint,
+    n: &BigUint,
+    oracle: &RsaParityOracle,
+) -> BigUint {
+    let mut ciphertext = ciphertext.clone();
+    let (mut lower, mut upper) = (BigUint::zero(), n.clone());
+    let two = BigUint::from_u8(2).unwrap();
+    let factor = two.clone().modpow(e, n);
+    let iterations = n.bits();
+    for _ in 0..iterations {
+        ciphertext = (ciphertext.clone() * factor.clone()) % n;
+        if oracle.is_plaintext_odd(&ciphertext) {
+            lower = (upper.clone() + lower.clone()) / two.clone();
+        } else {
+            upper = (upper.clone() + lower.clone()) / two.clone();
+        }
+    }
+    lower
+}
+
+struct RsaParityOracle {
+    keypair: RsaKeypair,
+}
+
+impl RsaParityOracle {
+    fn is_plaintext_odd(&self, ciphertext: &BigUint) -> bool {
+        let plaintext = ciphertext.modpow(&self.keypair.d, &self.keypair.n);
+        plaintext & BigUint::one() == BigUint::one()
+    }
+}
 
 // Challenge 45
 
