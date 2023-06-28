@@ -1,11 +1,11 @@
 use base64::{engine::general_purpose, Engine};
 use num_bigint::{BigInt, BigUint, RandBigInt, RandPrime, ToBigInt, ToBigUint};
 use num_bigint_dig as num_bigint;
-use num_traits::{FromPrimitive, Num, One, Zero};
+use num_traits::{FromPrimitive, Num, One, Zero, Pow, CheckedSub};
 use rand::{thread_rng, Rng, RngCore};
 use std::fs;
 use std::io::Read;
-use std::ops::Range;
+use std::ops::{Range, Mul};
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
@@ -15,6 +15,202 @@ use crate::{
     set4::{get_random_utf8, sha1, DIGEST_LENGTH_SHA1},
     set5::{cube_root, generate_large_primes, inv_mod},
 };
+
+// Challenge 48
+
+#[test]
+fn test_bleichenbacher_padding_oracle_complete() {
+    do_test_bleichenbacher_padding_oracle(384);
+}
+
+// Challenge 47
+
+#[test]
+fn test_bleichenbacher_padding_oracle_simple() {
+    do_test_bleichenbacher_padding_oracle(128);
+}
+
+pub fn do_test_bleichenbacher_padding_oracle(modulus_bit_length: usize) {
+    let keypair = RsaKeypair::new(3.to_biguint().unwrap(), modulus_bit_length);
+    let public_key = keypair.public_key();
+    let k = (public_key.n.bits() + 7) / 8; // byte size of n
+
+    let msg = b"kick it, CC";
+    let padded_msg = BigUint::from_bytes_be(&pkcs1_5_pad(msg, k));
+    let ciphertext = keypair.encrypt(&padded_msg);
+    let oracle = RsaPaddingOracle { keypair };
+    assert!(oracle.check_plaintext_padding(&ciphertext));
+
+    let decrypted = rsa_decrypt_from_padding_oracle_simple(&ciphertext, &public_key, &oracle);
+    assert_eq!(decrypted, padded_msg);
+}
+
+fn ceil_div(dividend: &BigUint, divisor: &BigUint) -> BigUint {
+    (dividend + (divisor - BigUint::one())) / divisor
+}
+
+fn floor_div(dividend: &BigUint, divisor: &BigUint) -> BigUint {
+    dividend / divisor
+}
+
+fn rsa_decrypt_from_padding_oracle_simple(
+    c: &BigUint,
+    pk: &RsaPublicKey,
+    oracle: &RsaPaddingOracle,
+) -> BigUint {
+    // To make creating some basic BitUints less verbose
+    let one = &BigUint::one();
+    let two = &2.to_biguint().unwrap();
+    let three = &3.to_biguint().unwrap();
+
+    let RsaPublicKey { e, n } = pk;
+    let k = (n.bits() + 7) / 8; // byte size of n
+    let big_b = &two.pow(8 * (k - 2)); // 2 ^ (8 * (k - 2))
+
+    // Step 1: Pick random integers for s0 to find one where c(s0)^e mod n is PKCS conforming.
+    let (c0, s0) = if oracle.check_plaintext_padding(c) {
+        (c.clone(), BigUint::one())
+    } else {
+        // This is never reached in our test cases
+        loop {
+            // Arbitrary way to generate random integers
+            let s0 = thread_rng().gen_biguint(thread_rng().gen_range(32..n.bits()));
+            let c0 = c * s0.modpow(e, n) % n;
+            if oracle.check_plaintext_padding(&c0) {
+                break (c0, s0);
+            }
+        }
+    };
+    // m0 = {[2B, 3B - 1]}
+    let m0 = vec![(two * big_b, three * big_b - one)];
+    println!("m0:");
+    for (a, b) in m0.iter() {
+        println!("(a, b): ({}, {})", a, b);
+    }
+    let mut m = vec![m0];
+    let mut s = vec![s0];
+
+    for i in 1..usize::MAX {
+        // Find si
+        println!("i: {}, s[i - 1]: {}", i, s[i - 1]);
+        let si = if i == 1 {
+            // Step 2a: Find smallest positive integer s_1 >= n/(3B) such that c_0(s_1)^e mod n is PKCS
+            // conforming.
+            let mut si = ceil_div(n, &(three * big_b));
+            while !oracle.check_plaintext_padding(&(c0.clone() * si.modpow(e, n))) {
+                si += one;
+            }
+            si
+        } else if m[i - 1].len() >= 2 {
+            // Step 2b: Search with more than one interval left
+            let mut si = s[i - 1].clone() + one;
+            while !oracle.check_plaintext_padding(&(c0.clone() * si.modpow(e, n))) {
+                si += one;
+            }
+            si
+        } else if m[i - 1].len() == 1 {
+            // Step 2c: Search with one interval left
+            let (a, b) = &m[i - 1][0];
+            // ri >= 2 (b * s[i - 1] - 2B) / n
+            let mut ri = ceil_div(&(two * (b * &s[i - 1] - two * big_b)), n);
+            let si = 'ri_loop: loop {
+                // (2B + ri * n) / b <= si < (3B + ri * n) / a
+                let s_lower = ceil_div(&(two * big_b + &ri * n), b);
+                let s_upper = floor_div(&(three * big_b + &ri * n), a);
+                // println!("s_lower: {}", s_lower);
+                // println!("s_upper: {}", s_upper);
+                // println!("diff: {:?}", &s_upper.checked_sub(&s_lower));
+                let mut si = s_lower;
+                while si <= s_upper {
+                    if oracle.check_plaintext_padding(&(c0.clone() * si.modpow(e, n))) {
+                        break 'ri_loop si;
+                    }
+                    si += one;
+                }
+                ri += one;
+            };
+            si
+        } else {
+            panic!();
+        };
+        println!("Found si: {}", si);
+
+        // Step 3: Narrowing the set of solutions
+        let mi = m[i - 1]
+            .iter()
+            .map(|(a, b)| {
+                let mut res = vec![];
+                // (a * si - 3B + 1) / n <= r <= (b * si - 2B) / n
+                let r_lower = ceil_div(&(a * &si - three * big_b + one), n);
+                let r_upper = floor_div(&(b * &si - two * big_b), n);
+                let mut r = r_lower;
+                while r <= r_upper {
+                    // max(a, ceil((2B + rn) / si))
+                    let lower = a.clone().max(ceil_div(&(two * big_b + &r * n), &si));
+                    // min(b, floor(3B - 1 + rn) / si)
+                    let upper = b.clone().min(floor_div(&(three * big_b - one + &r * n), &si));
+                    assert!(lower <= upper);
+                    res.push((lower, upper));
+                    r += one;
+                }
+                res
+            })
+            .flatten()
+            .collect::<Vec<(BigUint, BigUint)>>();
+
+        println!("mi:");
+        for (a, b) in mi.iter() {
+            println!("(a, b): ({}, {})", a, b);
+        }
+        if mi.len() == 1 && mi[0].0 == mi[0].1 {
+            let a = &mi[0].0;
+            println!("a: {}", a);
+            println!("inv_mod s[0] n: {}", inv_mod(&s[0], n).unwrap());
+            let m = a * inv_mod(&s[0], n).unwrap() % n;
+            println!("m: {}", m);
+            return m;
+        }
+
+        // Continue
+        s.push(si);
+        m.push(mi);
+    }
+
+    0.to_biguint().unwrap()
+}
+
+fn pkcs1_5_pad(msg: &[u8], key_byte_length: usize) -> Vec<u8> {
+    let padding = loop {
+        let mut padding = vec![0; key_byte_length - 3 - msg.len()];
+        thread_rng().fill_bytes(&mut padding);
+        if !padding.contains(&0) { break padding; }
+    };
+    [vec![0, 2], padding, vec![0], msg.to_vec()].concat()
+}
+
+struct RsaPublicKey {
+    e: BigUint,
+    n: BigUint
+}
+
+impl RsaPublicKey {
+    fn encrypt(&self, message: &BigUint) -> BigUint {
+        message.modpow(&self.e, &self.n)
+    }
+}
+
+struct RsaPaddingOracle {
+    keypair: RsaKeypair
+}
+
+impl RsaPaddingOracle {
+    fn check_plaintext_padding(&self, ciphertext: &BigUint) -> bool {
+        let plaintext_bytes = self.keypair.decrypt(ciphertext).to_bytes_be();
+        // Add the 0 byte to the beginning since BigUint will discard it
+        let plaintext_bytes = [vec![0], plaintext_bytes].concat();
+        plaintext_bytes[0] == 0x00 && plaintext_bytes[1] == 0x02
+    }
+}
 
 // Challenge 46
 
@@ -557,6 +753,18 @@ impl RsaKeypair {
         let totient = (p.clone() - 1.to_biguint().unwrap()) * (q.clone() - 1.to_biguint().unwrap());
         let d = inv_mod(&e, &totient).unwrap();
         Self { n, e, d }
+    }
+
+    fn public_key(&self) -> RsaPublicKey {
+        RsaPublicKey { e: self.e.clone(), n: self.n.clone() }
+    }
+
+    fn encrypt(&self, message: &BigUint) -> BigUint {
+        self.public_key().encrypt(message)
+    }
+
+    fn decrypt(&self, ciphertext: &BigUint) -> BigUint {
+        ciphertext.modpow(&self.d, &self.n)
     }
 
     /// Importantly, this implementation does not check that there is no
